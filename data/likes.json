@@ -1,0 +1,38 @@
+{
+  "likesCounts": {
+    "short-1": 2,
+    "short-2": 2,
+    "short-3": 1,
+    "regular-1": 1,
+    "short-4": 1,
+    "short-5": 1,
+    "short-6": 2,
+    "short-7": 1,
+    "short-8": 1,
+    "short-9": 1,
+    "short-10": 1
+  },
+  "userLikes": {
+    "user-dev-d2ywiu46-mu3x7qal": {
+      "short-1": true,
+      "short-2": true,
+      "short-3": true,
+      "regular-1": true,
+      "short-6": true
+    },
+    "user-dev-nmyh52j1-mu3xafqo": {
+      "short-1": true,
+      "short-2": true,
+      "short-4": true,
+      "short-5": true,
+      "short-6": true,
+      "short-7": true,
+      "short-8": true,
+      "short-9": true,
+      "short-10": true
+    },
+    "user-test-verify-1789553161068": {
+      "short-1": false
+    }
+  }
+}

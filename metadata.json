@@ -1,0 +1,8 @@
+{
+  "name": "NovelFlow",
+  "description": "Next.jsで構築する、没入型スワイプ操作で短編小説を直感的に消費できる「小説版YouTube」体験アプリ。",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
