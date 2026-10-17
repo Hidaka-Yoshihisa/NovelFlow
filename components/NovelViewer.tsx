@@ -15,29 +15,43 @@ import {
   X,
   Send,
   Coins,
+  Quote,
 } from 'lucide-react';
-import type { NovelWithDetails } from '@/types/database';
+import type { NovelWithDetails, PhraseLike } from '@/types/database';
 import { recordInteraction } from '@/lib/supabase';
+import PhraseLikesModal from './PhraseLikesModal';
 
 interface NovelViewerProps {
   novels: NovelWithDetails[];
   initialNovelIndex?: number;
+  initialPageIndex?: number;
   onBack?: () => void;
   onOpenPublish?: () => void;
   onToggleLike?: (novelId: string) => Promise<void> | void;
   userLikedIds?: Set<string>;
+  userBookmarkedIds?: Set<string>;
+  onToggleBookmark?: (novelId: string) => void;
+  phraseLikes?: PhraseLike[];
+  onAddPhraseLike?: (phraseData: Omit<PhraseLike, 'id' | 'createdAt'>) => Promise<void> | void;
+  onRemovePhraseLike?: (id: string) => Promise<void> | void;
 }
 
 export default function NovelViewer({
   novels,
   initialNovelIndex = 0,
+  initialPageIndex = 0,
   onBack,
   onOpenPublish,
   onToggleLike,
   userLikedIds,
+  userBookmarkedIds,
+  onToggleBookmark,
+  phraseLikes = [],
+  onAddPhraseLike,
+  onRemovePhraseLike,
 }: NovelViewerProps) {
   const [currentNovelIndex, setCurrentNovelIndex] = useState(initialNovelIndex);
-  const [currentPageIndex, setCurrentPageIndex] = useState(0);
+  const [currentPageIndex, setCurrentPageIndex] = useState(initialPageIndex);
   const [pageDirection, setPageDirection] = useState<1 | -1>(1);
   const [novelDirection, setNovelDirection] = useState<1 | -1>(1);
 
@@ -73,11 +87,36 @@ export default function NovelViewer({
     });
     setLikeCounts(counts);
   }, [novels]);
-  const [isBookmarked, setIsBookmarked] = useState<Record<string, boolean>>({});
+  const [isBookmarked, setIsBookmarked] = useState<Record<string, boolean>>(() => {
+    const map: Record<string, boolean> = {};
+    if (userBookmarkedIds) {
+      novels.forEach((n) => {
+        if (userBookmarkedIds.has(n.id)) map[n.id] = true;
+      });
+    }
+    return map;
+  });
+
+  useEffect(() => {
+    if (userBookmarkedIds) {
+      const map: Record<string, boolean> = {};
+      novels.forEach((n) => {
+        map[n.id] = userBookmarkedIds.has(n.id);
+      });
+      setIsBookmarked(map);
+    }
+  }, [userBookmarkedIds, novels]);
   const [activeToast, setActiveToast] = useState<string | null>(null);
 
   // 中央ダブルタップ「いいね」のアニメーション表示用ステート
   const [doubleTapHeart, setDoubleTapHeart] = useState<{ id: number; x: number; y: number } | null>(null);
+
+  // フレーズいいね関連ステート
+  const [showPhraseLikesModal, setShowPhraseLikesModal] = useState(false);
+  const [isSentenceMode, setIsSentenceMode] = useState(false); // 文タップ選択モード
+  const [selectionPopup, setSelectionPopup] = useState<{ text: string; x: number; y: number } | null>(null);
+  const [activeLikedPhrasePopup, setActiveLikedPhrasePopup] = useState<{ item: PhraseLike; x: number; y: number } | null>(null);
+  const [selectedSentenceForLike, setSelectedSentenceForLike] = useState<string | null>(null);
 
   // 投げ銭モーダル
   const [showTipModal, setShowTipModal] = useState(false);
@@ -108,6 +147,20 @@ export default function NovelViewer({
 
   // 1pxプログレスバー用の進捗率
   const progressPercent = ((currentPageIndex + 1) / totalPages) * 100;
+
+  // 外部からの初期ページ番号指定の反映
+  useEffect(() => {
+    if (initialPageIndex !== undefined && initialPageIndex >= 0) {
+      setCurrentPageIndex(initialPageIndex);
+    }
+  }, [initialPageIndex]);
+
+  // ページ・作品切り替え時に選択ポップアップ類を安全にクリア
+  useEffect(() => {
+    setSelectionPopup(null);
+    setActiveLikedPhrasePopup(null);
+    setSelectedSentenceForLike(null);
+  }, [currentPageIndex, currentNovelIndex]);
 
   // 作品切り替え時のタイトル＆作者名フェードアウトUI（1秒後にフワッと消滅）
   useEffect(() => {
@@ -222,9 +275,190 @@ export default function NovelViewer({
     recordInteraction(novelId, 'like', currentPageIndex + 1);
   }, [isLiked, userLikedIds, likeCounts, novels, currentNovel, currentPageIndex, onToggleLike]);
 
+  // 現在の作品のフレーズいいね一覧
+  const currentNovelPhraseLikes = (phraseLikes || []).filter(
+    (item) => item.novelId === currentNovel.id
+  );
+
+  // テキスト選択の検知（マウスドラッグや長押し選択）
+  const handleTextSelectionCheck = () => {
+    setTimeout(() => {
+      const sel = window.getSelection();
+      if (!sel || sel.isCollapsed) return;
+      const text = sel.toString().trim();
+      if (text.length >= 2 && text.length <= 300) {
+        try {
+          const range = sel.getRangeAt(0);
+          const rect = range.getBoundingClientRect();
+          if (rect.width > 0 && rect.height > 0) {
+            setSelectionPopup({
+              text,
+              x: rect.left + rect.width / 2,
+              y: Math.max(16, rect.top - 52),
+            });
+          }
+        } catch {}
+      }
+    }, 20);
+  };
+
+  // 選択テキストへのフレーズいいね
+  const handleLikeCurrentSelection = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!selectionPopup || !currentNovel) return;
+    const phrase = selectionPopup.text;
+    setSelectionPopup(null);
+    window.getSelection()?.removeAllRanges();
+
+    await onAddPhraseLike?.({
+      userId: '',
+      novelId: currentNovel.id,
+      novelTitle: currentNovel.title,
+      novelCategory: currentNovel.category || 'ショート',
+      authorName: currentNovel.author?.username || '作者',
+      pageNumber: currentPageIndex + 1,
+      chapterTitle: `${currentPageIndex + 1}ページ目`,
+      phrase,
+      surroundingContext: currentPage.content,
+    });
+
+    setActiveToast(`「${phrase.slice(0, 14)}${phrase.length > 14 ? '…' : ''}」にいいねしました！`);
+  };
+
+  // 文タップモードでの文いいね
+  const handleLikeSentence = async (sentence: string) => {
+    if (!sentence || !currentNovel) return;
+    setSelectedSentenceForLike(null);
+
+    await onAddPhraseLike?.({
+      userId: '',
+      novelId: currentNovel.id,
+      novelTitle: currentNovel.title,
+      novelCategory: currentNovel.category || 'ショート',
+      authorName: currentNovel.author?.username || '作者',
+      pageNumber: currentPageIndex + 1,
+      chapterTitle: `${currentPageIndex + 1}ページ目`,
+      phrase: sentence,
+      surroundingContext: currentPage.content,
+    });
+
+    setActiveToast(`「${sentence.slice(0, 14)}${sentence.length > 14 ? '…' : ''}」にいいねしました！`);
+  };
+
+  // 本文中のフレーズハイライト＋文選択の描画ロジック
+  const renderHighlightedContent = () => {
+    const rawContent = currentPage.content || '';
+    const pagePhrases = currentNovelPhraseLikes.filter(
+      (item) => item.pageNumber === currentPageIndex + 1
+    );
+
+    if (pagePhrases.length === 0 && !isSentenceMode) {
+      return rawContent;
+    }
+
+    const matches: { start: number; end: number; item: PhraseLike }[] = [];
+    for (const item of pagePhrases) {
+      if (!item.phrase) continue;
+      let idx = rawContent.indexOf(item.phrase);
+      while (idx !== -1) {
+        matches.push({ start: idx, end: idx + item.phrase.length, item });
+        idx = rawContent.indexOf(item.phrase, idx + item.phrase.length);
+      }
+    }
+
+    matches.sort((a, b) => a.start - b.start);
+    const nonOverlapping: typeof matches = [];
+    let lastEnd = 0;
+    for (const m of matches) {
+      if (m.start >= lastEnd) {
+        nonOverlapping.push(m);
+        lastEnd = m.end;
+      }
+    }
+
+    const elements: React.ReactNode[] = [];
+    let currentIndex = 0;
+
+    const renderNormalSubText = (text: string, keyPrefix: string) => {
+      if (!isSentenceMode) return text;
+      const sentenceRegex = /([^。！？\n]+[。！？]?|\n+)/g;
+      const parts = text.match(sentenceRegex) || [text];
+      return parts.map((part, pIdx) => {
+        if (part === '\n' || /^\n+$/.test(part)) {
+          return <span key={`${keyPrefix}-br-${pIdx}`}>{part}</span>;
+        }
+        return (
+          <span
+            key={`${keyPrefix}-sent-${pIdx}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              setSelectedSentenceForLike(part.trim());
+            }}
+            className="hover:bg-rose-500/15 cursor-pointer transition-colors p-0 m-0 inline underline decoration-transparent hover:decoration-rose-400 decoration-1 underline-offset-4 text-inherit font-inherit"
+            style={{
+              boxDecorationBreak: 'clone',
+              WebkitBoxDecorationBreak: 'clone',
+            }}
+            title="クリックしてこの文にいいね"
+          >
+            {part}
+          </span>
+        );
+      });
+    };
+
+    for (let i = 0; i < nonOverlapping.length; i++) {
+      const m = nonOverlapping[i];
+      if (m.start > currentIndex) {
+        const normalChunk = rawContent.slice(currentIndex, m.start);
+        elements.push(
+          <React.Fragment key={`chunk-${currentIndex}`}>
+            {renderNormalSubText(normalChunk, `chunk-${currentIndex}`)}
+          </React.Fragment>
+        );
+      }
+
+      elements.push(
+        <mark
+          key={`phrase-${m.item.id}-${m.start}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+            setActiveLikedPhrasePopup({
+              item: m.item,
+              x: rect.left + rect.width / 2,
+              y: Math.max(20, rect.top - 60),
+            });
+          }}
+          className="bg-rose-400/20 text-inherit font-inherit p-0 m-0 inline underline decoration-rose-500/60 decoration-2 underline-offset-4 cursor-pointer hover:bg-rose-400/35 transition-colors"
+          style={{
+            boxDecorationBreak: 'clone',
+            WebkitBoxDecorationBreak: 'clone',
+          }}
+          title="いいねしたフレーズ（タップして詳細・解除）"
+        >
+          {rawContent.slice(m.start, m.end)}
+        </mark>
+      );
+
+      currentIndex = m.end;
+    }
+
+    if (currentIndex < rawContent.length) {
+      const trailingChunk = rawContent.slice(currentIndex);
+      elements.push(
+        <React.Fragment key={`chunk-${currentIndex}`}>
+          {renderNormalSubText(trailingChunk, `chunk-${currentIndex}`)}
+        </React.Fragment>
+      );
+    }
+
+    return elements;
+  };
+
   // 画面タップ処理（左1/3・中央1/3・右1/3判定 ＋ 中央ダブルタップでいいね）
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
-    if (showIntroCard) return;
+    if (showIntroCard || showCommentModal || showTipModal || showPhraseLikesModal) return;
     touchStartPos.current = {
       x: e.clientX,
       y: e.clientY,
@@ -234,6 +468,46 @@ export default function NovelViewer({
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
     if (showIntroCard) return;
+
+    // 1. 各種モーダル表示中はページ送りを完全ブロック
+    if (showCommentModal || showTipModal || showPhraseLikesModal) {
+      return;
+    }
+
+    // 2. メニュー表示中はページ移動を完全に無効化（誤操作・連動ページ送りの完全防止）
+    // メニュー表示中に画面（本文や余白）をタップした場合は、メニューを閉じるのみとし、ページ送りは行わない
+    if (showOverlayMenu) {
+      if (singleTapTimerRef.current) {
+        clearTimeout(singleTapTimerRef.current);
+        singleTapTimerRef.current = null;
+      }
+      lastTapTimeRef.current = 0;
+      setShowOverlayMenu(false);
+      return;
+    }
+
+    // 3. テキスト選択中の場合はページめくりやメニュー開閉を抑制（誤操作防止）
+    const sel = typeof window !== 'undefined' ? window.getSelection() : null;
+    if (sel && !sel.isCollapsed && sel.toString().trim().length > 0) {
+      return;
+    }
+
+    // 4. 選択ポップアップやいいね済みポップアップ表示中の場合は、タップで閉じるのみ（ページめくり防止）
+    if (selectionPopup) {
+      setSelectionPopup(null);
+      window.getSelection()?.removeAllRanges();
+      return;
+    }
+    if (activeLikedPhrasePopup) {
+      setActiveLikedPhrasePopup(null);
+      return;
+    }
+
+    // 5. 文選択モード中はタップによるページ送りを無効化
+    if (isSentenceMode) {
+      return;
+    }
+
     const dx = e.clientX - touchStartPos.current.x;
     const dy = e.clientY - touchStartPos.current.y;
     const dt = Date.now() - touchStartPos.current.time;
@@ -312,6 +586,7 @@ export default function NovelViewer({
     const bookmarked = !isBookmarked[novelId];
     setIsBookmarked((prev) => ({ ...prev, [novelId]: bookmarked }));
     setActiveToast(bookmarked ? 'しおりを挟みました' : 'しおりを解除しました');
+    onToggleBookmark?.(novelId);
     recordInteraction(novelId, 'bookmark', currentPageIndex + 1);
   };
 
@@ -373,9 +648,6 @@ export default function NovelViewer({
       onPointerDown={handlePointerDown}
       onPointerUp={handlePointerUp}
     >
-      {/* 本の中央のわずかな背表紙折り目シャドウ（見開き感の演出） */}
-      <div className="absolute top-0 bottom-0 left-1/2 -translate-x-1/2 w-12 sm:w-20 book-crease-shadow pointer-events-none z-0" />
-
       {/* 垂直スワイプ（小説切り替え） */}
       <motion.div
         key={`novel-${currentNovel.id}`}
@@ -422,15 +694,34 @@ export default function NovelViewer({
               }}
               className="w-full flex flex-col justify-center max-w-2xl text-left tracking-wide"
             >
+              {/* 文選択モード中のステータスインジケーター */}
+              {isSentenceMode && (
+                <div className="mb-4 inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-rose-500/15 border border-rose-500/30 text-rose-800 text-xs font-sans self-center shadow-xs animate-in fade-in select-none">
+                  <Sparkles className="w-3.5 h-3.5 text-rose-600" />
+                  <span>文をタップして直接フレーズいいねできます</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsSentenceMode(false);
+                    }}
+                    className="ml-2 text-rose-700 hover:text-rose-900 underline text-[11px] font-bold"
+                  >
+                    通常読書へ
+                  </button>
+                </div>
+              )}
+
               {/* 本文：行間を1.8〜2.0に調整した文字だけのミニマルUI（羊皮紙に刻まれた墨インク色） */}
               <div
-                className={`text-[#221c17] whitespace-pre-wrap font-normal ${fontSizes[fontSize]} transition-all duration-200 antialiased`}
+                onMouseUp={handleTextSelectionCheck}
+                onTouchEnd={handleTextSelectionCheck}
+                className={`text-[#221c17] whitespace-pre-wrap font-normal ${fontSizes[fontSize]} antialiased select-text cursor-text`}
                 style={{
                   textRendering: 'optimizeLegibility',
                   letterSpacing: '0.04em',
                 }}
               >
-                {currentPage.content}
+                {renderHighlightedContent()}
               </div>
             </motion.div>
           </AnimatePresence>
@@ -470,18 +761,7 @@ export default function NovelViewer({
           )}
         </AnimatePresence>
 
-        {/* 最終ページのスワイプ案内 */}
-        {currentPageIndex === pages.length - 1 && !showIntroCard && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ repeat: Infinity, repeatType: 'reverse', duration: 1.5 }}
-            className="absolute bottom-6 left-1/2 -translate-x-1/2 z-20 flex flex-col items-center pointer-events-none text-[#8b7355] font-sans text-xs tracking-wider"
-          >
-            <ChevronUp className="w-4 h-4 animate-bounce text-[#735c41]" />
-            <span>上にスワイプして次のショート作品へ</span>
-          </motion.div>
-        )}
+        {/* 最終ページのスワイプ案内（中央タップ時のオーバーレイメニューでのみ表示） */}
       </motion.div>
 
       {/* 中央ダブルタップ時のビッグハートアニメーション */}
@@ -512,18 +792,15 @@ export default function NovelViewer({
         )}
       </AnimatePresence>
 
-      {/* タップガイド（画面上部に控えめに表示） */}
-      <div className="absolute top-3 left-1/2 -translate-x-1/2 z-10 pointer-events-none opacity-40 text-[10px] font-sans tracking-widest text-[#8b7355]">
-        タップ：左 ◀ | 中央 2回 ❤ / 1回 メニュー | 次へ ▶
-      </div>
-
-      {/* トグル式メニュー */}
+      {/* トグル式メニュー（画面中央タップで表示） */}
       <AnimatePresence>
         {showOverlayMenu && (
           <>
             {/* 上部ヘッダー */}
             <motion.header
               id="novel-overlay-header"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
               initial={{ opacity: 0, y: -20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -20 }}
@@ -569,6 +846,18 @@ export default function NovelViewer({
                     投稿
                   </button>
                 )}
+                <button
+                  onClick={() => setIsSentenceMode((prev) => !prev)}
+                  className={`px-2.5 py-1 rounded-full text-xs font-sans transition-all shadow-xs border flex items-center gap-1 ${
+                    isSentenceMode
+                      ? 'bg-rose-600 text-white border-rose-700 shadow-rose-900/20 font-bold'
+                      : 'bg-[#dacaba] text-[#5e4b3c] border-[#c7b5a1] hover:text-[#2a1f16]'
+                  }`}
+                  title="文をタップして直接いいねするモード"
+                >
+                  <Sparkles className="w-3 h-3 text-amber-300" />
+                  <span>{isSentenceMode ? '文選択中' : '文選択'}</span>
+                </button>
                 <div className="flex items-center bg-[#dacaba] rounded-full p-1 border border-[#c7b5a1]">
                   <button
                     onClick={() => setFontSize('sm')}
@@ -598,9 +887,23 @@ export default function NovelViewer({
               </div>
             </motion.header>
 
+            {/* 中央タップ時にのみ表示されるタップ操作ガイド */}
+            <motion.div
+              id="novel-tap-guide"
+              initial={{ opacity: 0, y: -6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.2 }}
+              className="absolute top-18 sm:top-20 left-1/2 -translate-x-1/2 z-40 pointer-events-none text-[10px] sm:text-[11px] font-sans tracking-wider text-[#6e5538] bg-[#ede3d1]/95 backdrop-blur-sm px-3.5 py-1 rounded-full border border-[#d8c7ad]/80 shadow-sm whitespace-nowrap max-w-[92vw] truncate select-none"
+            >
+              タップ：左 ◀ | 中央 2回 ❤ / 1回 メニュー | 次へ ▶
+            </motion.div>
+
             {/* 右下アクションメニュー */}
             <motion.aside
               id="novel-action-sidebar"
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: 20 }}
@@ -610,6 +913,8 @@ export default function NovelViewer({
               {/* 作者アイコン */}
               <div
                 className="relative cursor-pointer group"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   setActiveToast(`${currentNovel.author?.username || '作者'} の作品`);
@@ -636,6 +941,8 @@ export default function NovelViewer({
               {/* いいねボタン */}
               <button
                 id="btn-like-novel"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   if (currentNovel) triggerLike(currentNovel.id);
@@ -665,6 +972,8 @@ export default function NovelViewer({
               {/* コメントボタン */}
               <button
                 id="btn-comment-novel"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowCommentModal(true);
@@ -683,9 +992,39 @@ export default function NovelViewer({
                 </span>
               </button>
 
+              {/* フレーズいいね一覧（振り返り）ボタン */}
+              <button
+                id="btn-phrase-likes-novel"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setShowPhraseLikesModal(true);
+                }}
+                className="flex flex-col items-center gap-1 group"
+                title="フレーズいいね一覧・振り返り"
+              >
+                <motion.div
+                  whileTap={{ scale: 0.85 }}
+                  className="w-11 h-11 rounded-full bg-[#ede3d1]/90 text-rose-700 border border-[#cfbdab] flex items-center justify-center group-hover:bg-[#e4d6c0] shadow-md transition-colors relative"
+                >
+                  <Quote className="w-5 h-5 text-rose-600" />
+                  {currentNovelPhraseLikes.length > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-rose-600 text-white text-[9px] font-sans font-bold flex items-center justify-center shadow-xs">
+                      {currentNovelPhraseLikes.length}
+                    </span>
+                  )}
+                </motion.div>
+                <span className="text-[11px] font-sans font-medium text-[#4a392b] drop-shadow-sm">
+                  フレーズ
+                </span>
+              </button>
+
               {/* しおりボタン */}
               <button
                 id="btn-bookmark-novel"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={handleToggleBookmark}
                 className="flex flex-col items-center gap-1 group"
                 title="しおり"
@@ -712,6 +1051,8 @@ export default function NovelViewer({
               {/* 投げ銭（応援機能）ボタン */}
               <button
                 id="btn-tip-novel"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={(e) => {
                   e.stopPropagation();
                   setShowTipModal(true);
@@ -733,6 +1074,8 @@ export default function NovelViewer({
               {/* 共有ボタン */}
               <button
                 id="btn-share-novel"
+                onPointerDown={(e) => e.stopPropagation()}
+                onPointerUp={(e) => e.stopPropagation()}
                 onClick={handleShare}
                 className="flex flex-col items-center gap-1 group"
                 title="共有"
@@ -751,6 +1094,8 @@ export default function NovelViewer({
 
             {/* ページ番号表示 */}
             <motion.div
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -758,6 +1103,21 @@ export default function NovelViewer({
             >
               Page {currentPageIndex + 1} / {totalPages} • ショート {currentNovelIndex + 1}/{novels.length}
             </motion.div>
+
+            {/* 中央タップ時にのみ表示される「上にスワイプで次の作品へ」ガイド */}
+            {currentPageIndex === pages.length - 1 && (
+              <motion.div
+                id="novel-swipe-guide"
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 10 }}
+                transition={{ duration: 0.2 }}
+                className="absolute bottom-5 left-1/2 -translate-x-1/2 z-40 flex items-center gap-1.5 pointer-events-none text-[#6e5538] font-sans text-[11px] tracking-wider bg-[#ede3d1]/95 backdrop-blur-sm px-3.5 py-1.5 rounded-full border border-[#d8c7ad]/80 shadow-sm select-none"
+              >
+                <ChevronUp className="w-4 h-4 animate-bounce text-[#735c41]" />
+                <span>上にスワイプして次のショート作品へ</span>
+              </motion.div>
+            )}
           </>
         )}
       </AnimatePresence>
@@ -782,6 +1142,8 @@ export default function NovelViewer({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setShowTipModal(false)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
             className="absolute inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4 font-sans"
           >
             <motion.div
@@ -789,6 +1151,8 @@ export default function NovelViewer({
               animate={{ scale: 1, opacity: 1 }}
               exit={{ scale: 0.9, opacity: 0 }}
               onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
               className="bg-[#0c1812] border border-emerald-500/30 rounded-2xl p-6 max-w-sm w-full text-center shadow-2xl"
             >
               <div className="w-12 h-12 rounded-full bg-emerald-500/20 text-emerald-400 mx-auto flex items-center justify-center mb-3">
@@ -843,6 +1207,8 @@ export default function NovelViewer({
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             onClick={() => setShowCommentModal(false)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
             className="absolute inset-0 z-50 bg-black/70 backdrop-blur-sm flex flex-col justify-end font-sans"
           >
             <motion.div
@@ -851,6 +1217,8 @@ export default function NovelViewer({
               exit={{ y: '100%' }}
               transition={{ type: 'spring', damping: 26, stiffness: 280 }}
               onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onPointerUp={(e) => e.stopPropagation()}
               className="bg-[#121216] border-t border-neutral-800 rounded-t-2xl p-5 max-h-[70vh] flex flex-col"
             >
               <div className="flex items-center justify-between pb-3 border-b border-neutral-800">
@@ -903,6 +1271,158 @@ export default function NovelViewer({
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* 選択テキストへのフレーズいいねフローティングアクション */}
+      <AnimatePresence>
+        {selectionPopup && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.9, y: 10 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.9, y: 10 }}
+            className="fixed z-50 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-[#1b120a]/95 text-[#fbf6ec] shadow-[0_10px_35px_rgba(0,0,0,0.5)] border border-[#a88a68]/45 backdrop-blur-md"
+            style={{
+              left: `${Math.min(Math.max(selectionPopup.x, 110), window.innerWidth - 110)}px`,
+              top: `${selectionPopup.y}px`,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={handleLikeCurrentSelection}
+              className="flex items-center gap-1.5 text-xs font-medium text-rose-300 hover:text-rose-200 transition-colors py-0.5 px-2 rounded-full hover:bg-white/10 active:scale-95"
+            >
+              <Heart className="w-3.5 h-3.5 fill-rose-500 text-rose-500" />
+              <span>フレーズいいね</span>
+              <span className="text-[10px] text-[#c4b5a0] bg-black/40 px-1.5 py-0.2 rounded-full font-sans">
+                {selectionPopup.text.length}字
+              </span>
+            </button>
+            <div className="w-px h-3 bg-white/20" />
+            <button
+              onClick={() => {
+                setSelectionPopup(null);
+                window.getSelection()?.removeAllRanges();
+              }}
+              className="text-neutral-400 hover:text-white p-1 rounded-full text-xs"
+              title="閉じる"
+            >
+              <X className="w-3 h-3" />
+            </button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* いいね済みフレーズタップ時の詳細・解除ポップアップ */}
+      <AnimatePresence>
+        {activeLikedPhrasePopup && (
+          <motion.div
+            initial={{ opacity: 0, scale: 0.92 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0, scale: 0.92 }}
+            className="fixed z-50 -translate-x-1/2 bg-[#19110a]/95 border border-[#523c28] text-[#f7f2ea] p-3 rounded-2xl shadow-2xl backdrop-blur-md text-xs select-none max-w-xs w-[85vw]"
+            style={{
+              left: `${Math.min(Math.max(activeLikedPhrasePopup.x, 120), window.innerWidth - 120)}px`,
+              top: `${activeLikedPhrasePopup.y}px`,
+            }}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between gap-1 text-rose-400 font-bold mb-1">
+              <span className="flex items-center gap-1">
+                <Heart className="w-3.5 h-3.5 fill-current" />
+                <span>いいねしたフレーズ</span>
+              </span>
+              <button
+                onClick={() => setActiveLikedPhrasePopup(null)}
+                className="text-neutral-400 hover:text-white p-0.5"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+            <p className="text-[11px] text-[#d4c3b0] italic mb-2 line-clamp-2 bg-[#261a10] p-1.5 rounded-lg border border-[#3d2c1c]">
+              「{activeLikedPhrasePopup.item.phrase}」
+            </p>
+            <div className="flex items-center justify-end gap-2 pt-1 border-t border-[#2d1e13]">
+              <button
+                onClick={async () => {
+                  const textToCopy = `『${activeLikedPhrasePopup.item.phrase}』\n—— ${currentNovel.author?.username || '作者'}「${currentNovel.title}」より`;
+                  if (navigator.clipboard) await navigator.clipboard.writeText(textToCopy);
+                  setActiveToast('引用文をコピーしました');
+                  setActiveLikedPhrasePopup(null);
+                }}
+                className="px-2 py-1 rounded bg-[#2e1f14] hover:bg-[#3d2a1c] text-[#d6b998] text-[11px]"
+              >
+                引用コピー
+              </button>
+              <button
+                onClick={async () => {
+                  const id = activeLikedPhrasePopup.item.id;
+                  setActiveLikedPhrasePopup(null);
+                  await onRemovePhraseLike?.(id);
+                  setActiveToast('フレーズいいねを解除しました');
+                }}
+                className="px-2 py-1 rounded bg-rose-950/60 hover:bg-rose-900/80 text-rose-300 text-[11px] border border-rose-800/40"
+              >
+                解除
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 文タップモードでの確認カード */}
+      <AnimatePresence>
+        {selectedSentenceForLike && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 20 }}
+            className="fixed bottom-20 left-1/2 -translate-x-1/2 z-50 max-w-sm w-[90vw] p-4 rounded-2xl bg-[#17100b]/95 border border-[#523b28] shadow-2xl text-[#f5ebd9] backdrop-blur-md"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center gap-1.5 text-rose-400 text-xs font-bold mb-1.5">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>この文にいいねしますか？</span>
+            </div>
+            <p className="text-xs italic text-[#d4c3b0] mb-3 line-clamp-3 bg-[#241a12] p-2.5 rounded-xl border border-[#3b2c1f]">
+              「{selectedSentenceForLike}」
+            </p>
+            <div className="flex items-center justify-end gap-2">
+              <button
+                onClick={() => setSelectedSentenceForLike(null)}
+                className="px-3 py-1.5 rounded-xl text-xs text-[#a3917f] hover:text-[#f5ebd9] hover:bg-white/5"
+              >
+                キャンセル
+              </button>
+              <button
+                onClick={() => handleLikeSentence(selectedSentenceForLike)}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-rose-600 to-rose-500 hover:brightness-110 text-white text-xs font-bold shadow-md shadow-rose-900/30"
+              >
+                <Heart className="w-3.5 h-3.5 fill-current" />
+                <span>いいねする</span>
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* フレーズいいね一覧ドロワー */}
+      <PhraseLikesModal
+        isOpen={showPhraseLikesModal}
+        onClose={() => setShowPhraseLikesModal(false)}
+        novelTitle={currentNovel.title}
+        authorName={currentNovel.author?.username}
+        phraseLikes={currentNovelPhraseLikes}
+        currentPageNumber={currentPageIndex + 1}
+        onSelectPage={(page) => {
+          setCurrentPageIndex(page - 1);
+        }}
+        onRemovePhraseLike={(id) => {
+          onRemovePhraseLike?.(id);
+          setActiveToast('フレーズいいねを解除しました');
+        }}
+      />
 
       {/* 通知トースト */}
       <AnimatePresence>

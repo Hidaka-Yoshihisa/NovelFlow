@@ -1,7 +1,7 @@
 // app/page.tsx
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Sparkles,
@@ -22,6 +22,9 @@ import {
   Zap,
   X,
   User,
+  ArrowUpDown,
+  SlidersHorizontal,
+  Check,
 } from 'lucide-react';
 import NovelViewer from '@/components/NovelViewer';
 import RegularNovelViewer from '@/components/RegularNovelViewer';
@@ -34,23 +37,39 @@ import {
   toggleNovelLike,
   getLocalUserLikedIds,
   saveLocalUserLikedIds,
+  getLocalUserBookmarkedIds,
+  saveLocalUserBookmarkedIds,
   getEffectiveUserId,
+  getLocalUserPhraseLikes,
+  fetchUserPhraseLikes,
+  createPhraseLike,
+  deletePhraseLike,
 } from '@/lib/supabase';
 import { useAuth } from '@/lib/authContext';
-import type { NovelWithDetails } from '@/types/database';
+import type { NovelWithDetails, PhraseLike } from '@/types/database';
 
 export default function Home() {
   const { currentUser, isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState<'home' | 'shorts' | 'library' | 'explore'>('home');
   const [shortNovels, setShortNovels] = useState<NovelWithDetails[]>([]);
   const [regularNovels, setRegularNovels] = useState<NovelWithDetails[]>([]);
-  const [userLikedIds, setUserLikedIds] = useState<Set<string>>(() => getLocalUserLikedIds());
+  const [userLikedIds, setUserLikedIds] = useState<Set<string>>(() =>
+    getLocalUserLikedIds(getEffectiveUserId(currentUser))
+  );
+  const [userBookmarkedIds, setUserBookmarkedIds] = useState<Set<string>>(() =>
+    getLocalUserBookmarkedIds(getEffectiveUserId(currentUser))
+  );
+  const [userPhraseLikes, setUserPhraseLikes] = useState<PhraseLike[]>(() =>
+    getLocalUserPhraseLikes(getEffectiveUserId(currentUser))
+  );
   const [loading, setLoading] = useState(true);
 
-  // 閲覧中の通常小説
+  // 閲覧中の通常小説・初期章番号
   const [selectedRegularNovel, setSelectedRegularNovel] = useState<NovelWithDetails | null>(null);
-  // 選択中のショート小説インデックス
+  const [selectedRegularChapterIndex, setSelectedRegularChapterIndex] = useState<number>(0);
+  // 選択中のショート小説インデックス・初期ページ番号
   const [selectedShortIndex, setSelectedShortIndex] = useState<number>(0);
+  const [selectedShortPageIndex, setSelectedShortPageIndex] = useState<number>(0);
   // 新規投稿モーダル
   const [isPublishModalOpen, setIsPublishModalOpen] = useState(false);
   // マイページモーダル
@@ -64,6 +83,9 @@ export default function Home() {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+
+  // Exploreタブ用ソート
+  const [exploreSort, setExploreSort] = useState<'recommended' | 'likes' | 'newest'>('recommended');
 
   // 検索バーの外側クリック検知
   useEffect(() => {
@@ -92,7 +114,7 @@ export default function Home() {
       if (data.userLikedIds && Array.isArray(data.userLikedIds)) {
         const nextLikes = new Set(data.userLikedIds);
         setUserLikedIds(nextLikes);
-        saveLocalUserLikedIds(nextLikes);
+        saveLocalUserLikedIds(nextLikes, effectiveUserId);
       }
     } catch (err) {
       console.error('Failed to load novels:', err);
@@ -102,17 +124,54 @@ export default function Home() {
   };
 
   useEffect(() => {
+    const effectiveUserId = getEffectiveUserId(currentUser);
+    setUserLikedIds(getLocalUserLikedIds(effectiveUserId));
+    setUserBookmarkedIds(getLocalUserBookmarkedIds(effectiveUserId));
+    setUserPhraseLikes(getLocalUserPhraseLikes(effectiveUserId));
     loadNovels();
+
+    // サーバーから最新のフレーズいいね一覧を取得同期
+    fetchUserPhraseLikes(effectiveUserId).then((likes) => {
+      if (Array.isArray(likes)) {
+        setUserPhraseLikes(likes);
+      }
+    });
   }, [currentUser?.id]);
+
+  // フレーズいいねの追加
+  const handleAddPhraseLike = async (params: Omit<PhraseLike, 'id' | 'createdAt'>) => {
+    const effectiveUserId = getEffectiveUserId(currentUser);
+    const result = await createPhraseLike({ ...params, userId: effectiveUserId });
+    setUserPhraseLikes((prev) => {
+      const exists = prev.some(
+        (p) =>
+          p.id === result.id ||
+          (p.novelId === result.novelId &&
+            p.pageNumber === result.pageNumber &&
+            p.phrase.trim() === result.phrase.trim())
+      );
+      if (exists) return prev;
+      return [result, ...prev];
+    });
+  };
+
+  // フレーズいいねの解除
+  const handleRemovePhraseLike = async (id: string) => {
+    const effectiveUserId = getEffectiveUserId(currentUser);
+    await deletePhraseLike(id, effectiveUserId);
+    setUserPhraseLikes((prev) => prev.filter((p) => p.id !== id));
+  };
 
   const handleNovelPublished = (newNovel: NovelWithDetails) => {
     if (newNovel.type === 'short') {
       setShortNovels((prev) => [newNovel, ...prev.filter((n) => n.id !== newNovel.id)]);
       setSelectedShortIndex(0);
+      setSelectedShortPageIndex(0);
       setActiveTab('shorts');
     } else {
       setRegularNovels((prev) => [newNovel, ...prev.filter((n) => n.id !== newNovel.id)]);
       setSelectedRegularNovel(newNovel);
+      setSelectedRegularChapterIndex(0);
     }
     // サーバーの最新データとも再同期
     loadNovels();
@@ -127,8 +186,9 @@ export default function Home() {
     } else {
       nextUserLikedIds.add(novelId);
     }
+    const effectiveUserId = getEffectiveUserId(currentUser);
     setUserLikedIds(nextUserLikedIds);
-    saveLocalUserLikedIds(nextUserLikedIds);
+    saveLocalUserLikedIds(nextUserLikedIds, effectiveUserId);
 
     const delta = isCurrentlyLiked ? -1 : 1;
     setShortNovels((prev) =>
@@ -148,7 +208,6 @@ export default function Home() {
     }
 
     try {
-      const effectiveUserId = getEffectiveUserId(currentUser);
       const res = await toggleNovelLike(
         novelId,
         effectiveUserId,
@@ -169,12 +228,23 @@ export default function Home() {
         const next = new Set(prev);
         if (res.isLiked) next.add(novelId);
         else next.delete(novelId);
-        saveLocalUserLikedIds(next);
+        saveLocalUserLikedIds(next, effectiveUserId);
         return next;
       });
     } catch (err) {
       console.error('Failed to sync like:', err);
     }
+  };
+
+  // しおり切り替え処理（アカウント固有の同期・永続化）
+  const handleToggleBookmark = (novelId: string) => {
+    const effectiveUserId = getEffectiveUserId(currentUser);
+    const nextBookmarked = !userBookmarkedIds.has(novelId);
+    const nextSet = new Set(userBookmarkedIds);
+    if (nextBookmarked) nextSet.add(novelId);
+    else nextSet.delete(novelId);
+    setUserBookmarkedIds(nextSet);
+    saveLocalUserBookmarkedIds(nextSet, effectiveUserId);
   };
 
   // ショート小説のフィルタリング
@@ -206,6 +276,115 @@ export default function Home() {
     return matchesSearch && matchesCategory;
   });
 
+  // ユーザーのいいね傾向分析（作品いいね＋フレーズいいねに基づくカテゴリ好感度スコア）
+  const userCategoryStats = useMemo(() => {
+    const counts: Record<string, number> = {};
+    const allNovels = [...shortNovels, ...regularNovels];
+
+    // 1. 作品いいねからカテゴリ集計（1いいね＝3pt）
+    userLikedIds.forEach((id) => {
+      const novel = allNovels.find((n) => n.id === id);
+      if (novel?.category) {
+        counts[novel.category] = (counts[novel.category] || 0) + 3;
+      }
+    });
+
+    // 2. フレーズいいねからカテゴリ集計（1フレーズいいね＝1pt）
+    userPhraseLikes.forEach((item) => {
+      if (item.novelCategory) {
+        counts[item.novelCategory] = (counts[item.novelCategory] || 0) + 1;
+      }
+    });
+
+    // スコア降順のカテゴリ配列
+    const sortedCategories = Object.entries(counts)
+      .filter(([_, score]) => score > 0)
+      .sort((a, b) => b[1] - a[1])
+      .map(([cat, score]) => ({ category: cat, score }));
+
+    return {
+      scores: counts,
+      sortedCategories,
+      topCategories: sortedCategories.map((c) => c.category),
+      totalScore: Object.values(counts).reduce((a, b) => a + b, 0),
+    };
+  }, [shortNovels, regularNovels, userLikedIds, userPhraseLikes]);
+
+  // Exploreタブ用の動的推薦作品リスト（ユーザーのいいねカテゴリ傾向に基づくリアルタイム推薦順序決定）
+  const recommendedNovels = useMemo(() => {
+    const allNovels = [...shortNovels, ...regularNovels];
+    const { scores, topCategories, totalScore } = userCategoryStats;
+
+    return allNovels
+      .map((novel) => {
+        const cat = novel.category || '';
+        const catScore = scores[cat] || 0;
+        const isLiked = userLikedIds.has(novel.id);
+        const baseLikes = novel.likesCount || 0;
+        const commentsCount = novel.commentsCount || 0;
+
+        let recommendationScore = 0;
+        let recommendationTag = '';
+        let isTopMatch = false;
+
+        if (totalScore > 0 && catScore > 0) {
+          // ユーザー好みのカテゴリに一致：カテゴリ得点に応じた強力な重み付け
+          const rank = topCategories.indexOf(cat);
+          recommendationScore += (catScore * 40) + (rank === 0 ? 80 : rank === 1 ? 40 : 20);
+          recommendationScore += baseLikes * 2 + commentsCount;
+
+          if (rank === 0) {
+            recommendationTag = `🎯 「${cat}」好きのあなたへ`;
+            isTopMatch = true;
+          } else {
+            recommendationTag = `✨ 好みに近い「${cat}」`;
+          }
+        } else if (totalScore === 0) {
+          // コールドスタート（まだいいねが無い場合）：人気度・話題性重視
+          recommendationScore = baseLikes * 10 + commentsCount * 5;
+          if (baseLikes >= 3) {
+            recommendationTag = '🔥 読者に大人気の話題作';
+          } else {
+            recommendationTag = '🌟 編集部おすすめの注目作';
+          }
+        } else {
+          // ユーザーの好みカテゴリ外：新しいジャンルの発見枠
+          recommendationScore = baseLikes * 2 + commentsCount;
+          recommendationTag = `🧭 未開拓ジャンル「${cat}」`;
+        }
+
+        // 未読・未いいねの作品を少しブーストして新規作品との出会いを後押し
+        if (!isLiked && catScore > 0) {
+          recommendationScore += 15;
+        }
+
+        return {
+          novel,
+          recommendationScore,
+          recommendationTag,
+          isTopMatch,
+          categoryAffinity: catScore,
+          isLiked,
+        };
+      })
+      .sort((a, b) => {
+        if (exploreSort === 'likes') {
+          return (b.novel.likesCount || 0) - (a.novel.likesCount || 0);
+        }
+        if (exploreSort === 'newest') {
+          return new Date(b.novel.created_at).getTime() - new Date(a.novel.created_at).getTime();
+        }
+        // デフォルト: 'recommended'（推薦スコア降順）
+        return b.recommendationScore - a.recommendationScore;
+      });
+  }, [
+    shortNovels,
+    regularNovels,
+    userCategoryStats,
+    userLikedIds,
+    exploreSort,
+  ]);
+
   if (loading) {
     return (
       <div className="w-screen h-screen bg-[#070d0a] flex flex-col items-center justify-center text-emerald-300 font-sans">
@@ -220,9 +399,18 @@ export default function Home() {
     return (
       <RegularNovelViewer
         novel={selectedRegularNovel}
-        onBack={() => setSelectedRegularNovel(null)}
+        initialChapterIndex={selectedRegularChapterIndex}
+        onBack={() => {
+          setSelectedRegularNovel(null);
+          setSelectedRegularChapterIndex(0);
+        }}
         onToggleLike={handleToggleLike}
         userLikedIds={userLikedIds}
+        userBookmarkedIds={userBookmarkedIds}
+        onToggleBookmark={handleToggleBookmark}
+        phraseLikes={userPhraseLikes}
+        onAddPhraseLike={handleAddPhraseLike}
+        onRemovePhraseLike={handleRemovePhraseLike}
       />
     );
   }
@@ -235,10 +423,19 @@ export default function Home() {
         <NovelViewer
           novels={shortNovels}
           initialNovelIndex={selectedShortIndex}
-          onBack={() => setActiveTab('home')}
+          initialPageIndex={selectedShortPageIndex}
+          onBack={() => {
+            setActiveTab('home');
+            setSelectedShortPageIndex(0);
+          }}
           onOpenPublish={() => setIsPublishModalOpen(true)}
           onToggleLike={handleToggleLike}
           userLikedIds={userLikedIds}
+          userBookmarkedIds={userBookmarkedIds}
+          onToggleBookmark={handleToggleBookmark}
+          phraseLikes={userPhraseLikes}
+          onAddPhraseLike={handleAddPhraseLike}
+          onRemovePhraseLike={handleRemovePhraseLike}
         />
 
         {/* 投稿モーダル */}
@@ -509,49 +706,185 @@ export default function Home() {
       </header>
 
       {/* メインコンテンツエリア */}
-      <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 max-w-[1680px] mx-auto w-full">
+      <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8 pb-24 sm:pb-28 lg:pb-8 max-w-[1680px] mx-auto w-full">
         {activeTab === 'explore' ? (
           /* レコメンド・AI発見タブ */
-          <div className="max-w-3xl mx-auto py-8 text-center space-y-6">
-            <div className="w-16 h-16 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto">
-              <Compass className="w-8 h-8" />
-            </div>
-            <div>
-              <h2 className="text-xl font-bold text-white font-serif">
-                あなただけのAIレコメンド・アルゴリズム発見
-              </h2>
-              <p className="text-xs text-neutral-400 mt-2 max-w-md mx-auto leading-relaxed">
-                読書履歴やいいね、スワイプ滞在時間をもとに、次世代のパーソナライズされた作品を自動生成・推薦します（近日公開予定）。
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-left pt-4">
-              <div
-                onClick={() => setActiveTab('shorts')}
-                className="p-5 rounded-2xl bg-[#0e1c15] border border-[#1a3828] hover:border-emerald-500/50 cursor-pointer transition-all group"
-              >
-                <div className="flex items-center gap-2 text-emerald-400 font-bold text-sm mb-2">
-                  <Flame className="w-4 h-4" />
-                  <span>ショート小説を今すぐスワイプ</span>
+          <div className="space-y-6 max-w-7xl mx-auto">
+            {/* ヘッダーエリア */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-[#142a1e]">
+              <div className="flex items-start gap-3">
+                <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-[#041a12] shadow-md shadow-emerald-950/50 shrink-0">
+                  <Compass className="w-5 h-5" />
                 </div>
-                <p className="text-xs text-neutral-400 leading-relaxed">
-                  短時間で没入できる10本のサンプルショート作品を直感的に発見。
-                </p>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-xl sm:text-2xl font-bold text-white font-serif tracking-tight">
+                      おすすめ作品
+                    </h2>
+                    <span className="text-[10px] sm:text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+                      パーソナライズ推薦
+                    </span>
+                  </div>
+                  <p className="text-xs text-neutral-400 mt-1">
+                    いいねした作品・フレーズのカテゴリ傾向から、あなただけの推薦順序をリアルタイム分析
+                    <button
+                      onClick={() => setIsMyPageOpen(true)}
+                      className="ml-2 text-emerald-400 hover:text-emerald-300 underline font-medium cursor-pointer"
+                    >
+                      （マイページで傾向を確認 →）
+                    </button>
+                  </p>
+                </div>
               </div>
 
-              <div
-                onClick={() => setActiveTab('library')}
-                className="p-5 rounded-2xl bg-[#0e1c15] border border-[#1a3828] hover:border-teal-500/50 cursor-pointer transition-all group"
-              >
-                <div className="flex items-center gap-2 text-teal-300 font-bold text-sm mb-2">
-                  <BookOpen className="w-4 h-4" />
-                  <span>通常小説ライブラリを閲覧</span>
+              {/* ソートセレクター */}
+              <div className="flex items-center gap-2 self-start md:self-auto">
+                <span className="text-xs text-neutral-400 flex items-center gap-1">
+                  <ArrowUpDown className="w-3.5 h-3.5" />
+                  <span>並び順:</span>
+                </span>
+                <div className="flex items-center bg-[#0d1a13] border border-[#163123] rounded-xl p-1 text-xs">
+                  <button
+                    onClick={() => setExploreSort('recommended')}
+                    className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
+                      exploreSort === 'recommended'
+                        ? 'bg-emerald-500/20 text-emerald-300 font-bold shadow-xs'
+                        : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    おすすめ順
+                  </button>
+                  <button
+                    onClick={() => setExploreSort('likes')}
+                    className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
+                      exploreSort === 'likes'
+                        ? 'bg-emerald-500/20 text-emerald-300 font-bold shadow-xs'
+                        : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    いいね人気順
+                  </button>
+                  <button
+                    onClick={() => setExploreSort('newest')}
+                    className={`px-3 py-1 rounded-lg font-medium transition-all cursor-pointer ${
+                      exploreSort === 'newest'
+                        ? 'bg-emerald-500/20 text-emerald-300 font-bold shadow-xs'
+                        : 'text-neutral-400 hover:text-white'
+                    }`}
+                  >
+                    新着順
+                  </button>
                 </div>
-                <p className="text-xs text-neutral-400 leading-relaxed">
-                  本格的な章立てと連載ストーリーが楽しめる通常作品群。
-                </p>
               </div>
             </div>
+
+            {/* 推薦作品グリッド */}
+            {recommendedNovels.length === 0 ? (
+              <div className="p-12 text-center rounded-3xl bg-[#0d1c15] border border-[#183628] text-neutral-400">
+                該当する推薦作品はありません
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 gap-4 sm:gap-5">
+                {recommendedNovels.map((item) => {
+                  const isShort = item.novel.type === 'short';
+                  return (
+                    <div
+                      key={`rec-${item.novel.id}`}
+                      onClick={() => {
+                        if (isShort) {
+                          const idx = shortNovels.findIndex((s) => s.id === item.novel.id);
+                          setSelectedShortIndex(idx >= 0 ? idx : 0);
+                          setSelectedShortPageIndex(0);
+                          setActiveTab('shorts');
+                        } else {
+                          setSelectedRegularNovel(item.novel);
+                          setSelectedRegularChapterIndex(0);
+                        }
+                      }}
+                      className="p-5 sm:p-6 rounded-2xl parchment-card cursor-pointer transition-all duration-200 hover:-translate-y-1 group flex flex-col justify-between relative overflow-hidden"
+                    >
+                      <div>
+                        {/* 推薦バッジ ＆ 作品形式バッジ */}
+                        <div className="flex flex-wrap items-center justify-between gap-1.5 mb-2.5">
+                          <span
+                            className={`text-[10px] px-2.5 py-0.5 rounded-full font-sans font-bold flex items-center gap-1 ${
+                              item.isTopMatch
+                                ? 'bg-emerald-700/20 text-emerald-800 border border-emerald-600/40'
+                                : 'bg-[#e5d6be] text-[#5e4732] border border-[#cfbdab]'
+                            }`}
+                          >
+                            <span>{item.recommendationTag}</span>
+                          </span>
+
+                          <span className="text-[9px] font-sans px-2 py-0.5 rounded bg-[#f0e6d6] text-[#785f47] border border-[#d6c4ad]">
+                            {isShort ? 'ショート' : `全${item.novel.pages.length}話`}
+                          </span>
+                        </div>
+
+                        {/* タイトル */}
+                        <h3 className="text-base sm:text-lg font-bold text-[#201812] font-serif group-hover:text-[#8b6f4e] transition-colors leading-snug line-clamp-2">
+                          {item.novel.title}
+                        </h3>
+
+                        {/* カテゴリ */}
+                        <div className="mt-2 flex items-center gap-2">
+                          <span className="text-[10px] font-medium text-[#7a5e3f] bg-[#eedec9] px-2 py-0.5 rounded border border-[#d6c1a5] tracking-wider font-sans">
+                            {item.novel.category || 'その他'}
+                          </span>
+                        </div>
+
+                        {/* あらすじ */}
+                        <p className="text-xs sm:text-[13px] text-[#5c4936] mt-2.5 line-clamp-3 leading-relaxed font-serif">
+                          {item.novel.synopsis}
+                        </p>
+                      </div>
+
+                      {/* フッター（作者情報・いいねボタン・読むボタン） */}
+                      <div className="pt-3.5 mt-5 border-t border-[#d8c7ad] flex items-center justify-between text-xs text-[#6e5a48] font-sans">
+                        <div className="flex items-center gap-2 truncate max-w-[120px]">
+                          <img
+                            src={item.novel.author?.avatar_url || ''}
+                            alt={item.novel.author?.username}
+                            className="w-5 h-5 rounded-full object-cover border border-[#c4a984]"
+                          />
+                          <span className="truncate text-[#3b2d21] text-[11px] font-medium">
+                            {item.novel.author?.username}
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-2">
+                          {/* いいねボタン（押下で推薦順序がリアルタイムに更新） */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleToggleLike(item.novel.id);
+                            }}
+                            className={`flex items-center gap-1 font-semibold px-2 py-1 rounded-md text-xs transition-all cursor-pointer ${
+                              userLikedIds.has(item.novel.id)
+                                ? 'text-rose-700 font-bold bg-rose-500/20'
+                                : 'text-stone-700 hover:text-rose-700 bg-stone-500/10 hover:bg-rose-500/10'
+                            }`}
+                            title={userLikedIds.has(item.novel.id) ? 'いいね解除' : 'いいね！'}
+                          >
+                            <Heart
+                              className={`w-3.5 h-3.5 transition-colors ${
+                                userLikedIds.has(item.novel.id) ? 'fill-rose-600 text-rose-600' : 'text-stone-500'
+                              }`}
+                            />
+                            <span>{item.novel.likesCount || 0}</span>
+                          </button>
+
+                          <span className="px-2 py-1 rounded bg-[#3b2d21] text-[#f7f3e8] text-[10px] font-bold group-hover:bg-[#5a4431] transition-colors">
+                            {isShort ? 'スワイプ' : '読む'}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         ) : activeTab === 'home' ? (
           /* ホーム画面（ショート小説を最前面に広く展開、通常小説ピックアップ） */
@@ -911,6 +1244,124 @@ export default function Home() {
         )}
       </main>
 
+      {/* モバイル用常時下部ナビゲーションバー（おすすめ・ホーム・ショート・通常小説・マイページ） */}
+      <nav
+        id="mobile-bottom-nav"
+        className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#08150f]/95 backdrop-blur-xl border-t border-[#163625] px-2 py-1.5 flex items-center justify-around shadow-[0_-4px_24px_rgba(0,0,0,0.6)]"
+      >
+        {/* ホーム */}
+        <button
+          id="btn-mobile-nav-home"
+          onClick={() => {
+            setActiveTab('home');
+            setSearchQuery('');
+          }}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            activeTab === 'home'
+              ? 'text-emerald-400 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+        >
+          <div className="relative">
+            <HomeIcon className="w-5 h-5" />
+            {activeTab === 'home' && (
+              <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            )}
+          </div>
+          <span className="text-[10px] mt-1 tracking-tight">ホーム</span>
+        </button>
+
+        {/* おすすめ（パーソナライズ推薦） */}
+        <button
+          id="btn-mobile-nav-explore"
+          onClick={() => {
+            setActiveTab('explore');
+            setSearchQuery('');
+          }}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer relative ${
+            activeTab === 'explore'
+              ? 'text-emerald-400 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+        >
+          <div className="relative">
+            <Compass className="w-5 h-5" />
+            {activeTab === 'explore' && (
+              <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-emerald-400" />
+            )}
+            {userCategoryStats.totalScore > 0 && activeTab !== 'explore' && (
+              <span className="absolute -top-0.5 -right-1 w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            )}
+          </div>
+          <span className="text-[10px] mt-1 tracking-tight">おすすめ</span>
+        </button>
+
+        {/* ショート */}
+        <button
+          id="btn-mobile-nav-shorts"
+          onClick={() => {
+            setSelectedShortIndex(0);
+            setSelectedShortPageIndex(0);
+            setActiveTab('shorts');
+          }}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            activeTab === 'shorts'
+              ? 'text-rose-400 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+        >
+          <div className="relative">
+            <Flame className="w-5 h-5 text-rose-500" />
+            {activeTab === 'shorts' && (
+              <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-rose-500" />
+            )}
+          </div>
+          <span className="text-[10px] mt-1 tracking-tight">ショート</span>
+        </button>
+
+        {/* 通常小説 */}
+        <button
+          id="btn-mobile-nav-library"
+          onClick={() => {
+            setActiveTab('library');
+            setSearchQuery('');
+          }}
+          className={`flex flex-col items-center justify-center py-1 px-3 rounded-xl transition-all cursor-pointer ${
+            activeTab === 'library'
+              ? 'text-teal-300 font-bold'
+              : 'text-neutral-400 hover:text-white'
+          }`}
+        >
+          <div className="relative">
+            <BookOpen className="w-5 h-5" />
+            {activeTab === 'library' && (
+              <span className="absolute -bottom-1 left-1/2 -translate-x-1/2 w-1.5 h-1.5 rounded-full bg-teal-400" />
+            )}
+          </div>
+          <span className="text-[10px] mt-1 tracking-tight">通常小説</span>
+        </button>
+
+        {/* マイページ */}
+        <button
+          id="btn-mobile-nav-mypage"
+          onClick={() => setIsMyPageOpen(true)}
+          className="flex flex-col items-center justify-center py-1 px-3 rounded-xl text-neutral-400 hover:text-white transition-all cursor-pointer"
+        >
+          <div className="relative">
+            {currentUser?.avatar_url ? (
+              <img
+                src={currentUser.avatar_url}
+                alt={currentUser.username}
+                className="w-5 h-5 rounded-full object-cover border border-emerald-400/50"
+              />
+            ) : (
+              <User className="w-5 h-5" />
+            )}
+          </div>
+          <span className="text-[10px] mt-1 tracking-tight">マイページ</span>
+        </button>
+      </nav>
+
       {/* 投稿モーダル */}
       <PublishModal
         isOpen={isPublishModalOpen}
@@ -923,18 +1374,27 @@ export default function Home() {
         isOpen={isMyPageOpen}
         onClose={() => setIsMyPageOpen(false)}
         novels={{ shorts: shortNovels, regulars: regularNovels }}
-        onSelectShort={(idx) => {
+        userLikedIds={userLikedIds}
+        userBookmarkedIds={userBookmarkedIds}
+        onToggleLike={handleToggleLike}
+        onToggleBookmark={handleToggleBookmark}
+        onSelectShort={(idx, page) => {
           setSelectedShortIndex(idx);
+          setSelectedShortPageIndex(page ?? 0);
           setActiveTab('shorts');
         }}
-        onSelectRegular={(novel) => {
+        onSelectRegular={(novel, chapter) => {
           setSelectedRegularNovel(novel);
+          setSelectedRegularChapterIndex(chapter ?? 0);
         }}
         onOpenPublish={() => setIsPublishModalOpen(true)}
         onOpenAuth={() => {
           setAuthModalMode('register');
           setIsAuthModalOpen(true);
         }}
+        phraseLikes={userPhraseLikes}
+        onRemovePhraseLike={handleRemovePhraseLike}
+        recommendedNovels={recommendedNovels}
       />
 
       {/* アカウント作成 / ログインモーダル */}

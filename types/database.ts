@@ -152,3 +152,20 @@ export interface NovelWithDetails extends Novel {
   isLiked?: boolean;
   isBookmarked?: boolean;
 }
+
+/**
+ * 閲覧中の作品の特定フレーズ・1文への「いいね」
+ */
+export interface PhraseLike {
+  id: string;
+  userId: string;
+  novelId: string;
+  novelTitle: string;
+  novelCategory?: string;
+  authorName?: string;
+  pageNumber: number; // 1-based page or chapter number
+  chapterTitle?: string | null;
+  phrase: string; // いいねした文・数文字
+  surroundingContext?: string; // 周辺の文脈テキスト
+  createdAt: string; // ISO日時
+}

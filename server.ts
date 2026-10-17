@@ -13,6 +13,7 @@ app.use(express.json({ limit: '10mb' }));
 const DATA_DIR = path.join(process.cwd(), 'data');
 const NOVELS_FILE = path.join(DATA_DIR, 'novels.json');
 const LIKES_FILE = path.join(DATA_DIR, 'likes.json');
+const PHRASE_LIKES_FILE = path.join(DATA_DIR, 'phrase_likes.json');
 
 // 初期ストレージの作成（初期いいね数は全作品0に設定）
 function initStorage() {
@@ -35,9 +36,32 @@ function initStorage() {
       'utf-8'
     );
   }
+
+  if (!fs.existsSync(PHRASE_LIKES_FILE)) {
+    fs.writeFileSync(PHRASE_LIKES_FILE, JSON.stringify([], null, 2), 'utf-8');
+  }
 }
 
 initStorage();
+
+function readPhraseLikes(): any[] {
+  try {
+    if (!fs.existsSync(PHRASE_LIKES_FILE)) return [];
+    const raw = fs.readFileSync(PHRASE_LIKES_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error('Error reading phrase likes file:', err);
+    return [];
+  }
+}
+
+function writePhraseLikes(data: any[]) {
+  try {
+    fs.writeFileSync(PHRASE_LIKES_FILE, JSON.stringify(data, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error writing phrase likes file:', err);
+  }
+}
 
 function readNovels(): NovelWithDetails[] {
   try {
@@ -94,14 +118,18 @@ function getUserLikedNovelIds(likesData: LikesData, rawUserId: string): string[]
   if (!rawUserId) return [];
   const normalized = normalizeUserId(rawUserId);
   const bareId = rawUserId.replace(/^user-/, '');
-  const candidateKeys = Array.from(new Set([rawUserId, normalized, bareId, `user-${rawUserId}`]));
+  const candidateKeys = Array.from(new Set([normalized, rawUserId, bareId]));
 
   const liked = new Set<string>();
   for (const k of candidateKeys) {
     const userMap = likesData.userLikes[k];
-    if (userMap) {
+    if (userMap && typeof userMap === 'object') {
       for (const [novelId, isLiked] of Object.entries(userMap)) {
-        if (isLiked) liked.add(novelId);
+        if (isLiked === true) {
+          liked.add(novelId);
+        } else if (isLiked === false) {
+          liked.delete(novelId);
+        }
       }
     }
   }
@@ -118,33 +146,44 @@ app.get('/api/novels', (req, res) => {
   const novels = readNovels();
   const likesData = readLikes();
 
-  // 計算された確実な全ユーザーいいね数と各作品情報の統合
-  const merged = novels.map((novel) => {
-    let count = 0;
-    for (const uId of Object.keys(likesData.userLikes)) {
-      if (likesData.userLikes[uId]?.[novel.id] === true) {
-        count++;
+  // 計算された確実な全ユーザーいいね数（現在有効なtrueのみ）を集計
+  const exactCounts: Record<string, number> = {};
+  for (const novel of novels) {
+    exactCounts[novel.id] = 0;
+  }
+  for (const uId of Object.keys(likesData.userLikes)) {
+    const userMap = likesData.userLikes[uId];
+    if (userMap && typeof userMap === 'object') {
+      for (const [novelId, isLiked] of Object.entries(userMap)) {
+        if (isLiked === true) {
+          exactCounts[novelId] = (exactCounts[novelId] || 0) + 1;
+        }
       }
     }
-    if (likesData.likesCounts && typeof likesData.likesCounts[novel.id] === 'number') {
-      count = Math.max(count, likesData.likesCounts[novel.id]);
-    }
+  }
+
+  const merged = novels.map((novel) => {
+    const count = exactCounts[novel.id] ?? 0;
     return {
       ...novel,
       likesCount: count,
     };
   });
 
+  likesData.likesCounts = exactCounts;
+  writeLikes(likesData);
+  writeNovels(merged);
+
   const shortNovels = merged.filter((n) => n.type === 'short');
   const regularNovels = merged.filter((n) => n.type !== 'short');
 
-  const userLikedNovelIds = getUserLikedNovelIds(likesData, userId);
+  const userLikedNovelIds = userId ? getUserLikedNovelIds(likesData, userId) : [];
 
   res.json({
     shortNovels,
     regularNovels,
     userLikedIds: userLikedNovelIds,
-    likesCounts: likesData.likesCounts,
+    likesCounts: exactCounts,
   });
 });
 
@@ -285,13 +324,121 @@ app.get('/api/likes', (req, res) => {
   });
 });
 
+// フレーズいいね一覧取得
+app.get('/api/phrase-likes', (req, res) => {
+  try {
+    const rawUserId = (req.query.userId as string) || 'anonymous-user';
+    const userId = normalizeUserId(rawUserId);
+    const novelId = req.query.novelId as string | undefined;
+
+    const all = readPhraseLikes();
+    const filtered = all.filter((item) => {
+      const itemUserId = normalizeUserId(item.userId);
+      const matchesUser = itemUserId === userId;
+      const matchesNovel = novelId ? item.novelId === novelId : true;
+      return matchesUser && matchesNovel;
+    });
+
+    res.json({ phraseLikes: filtered });
+  } catch (err: any) {
+    console.error('Failed to get phrase likes:', err);
+    res.status(500).json({ error: 'フレーズいいねの取得に失敗しました' });
+  }
+});
+
+// フレーズいいね追加
+app.post('/api/phrase-likes', (req, res) => {
+  try {
+    const rawUserId = req.body.userId || 'anonymous-user';
+    const userId = normalizeUserId(rawUserId);
+    const {
+      novelId,
+      novelTitle,
+      novelCategory,
+      authorName,
+      pageNumber,
+      chapterTitle,
+      phrase,
+      surroundingContext,
+    } = req.body;
+
+    if (!novelId || !phrase || typeof phrase !== 'string') {
+      return res.status(400).json({ error: '作品IDとフレーズ内容は必須です' });
+    }
+
+    const all = readPhraseLikes();
+    const targetPage = Number(pageNumber) || 1;
+    const cleanPhrase = phrase.trim();
+
+    const existing = all.find(
+      (item) =>
+        normalizeUserId(item.userId) === userId &&
+        item.novelId === novelId &&
+        item.pageNumber === targetPage &&
+        item.phrase.trim() === cleanPhrase
+    );
+
+    if (existing) {
+      return res.json({ success: true, phraseLike: existing, isNew: false });
+    }
+
+    const newPhraseLike = {
+      id: `pl-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      userId,
+      novelId,
+      novelTitle: novelTitle || '作品',
+      novelCategory: novelCategory || 'ショート',
+      authorName: authorName || '作者',
+      pageNumber: targetPage,
+      chapterTitle: chapterTitle || null,
+      phrase: cleanPhrase,
+      surroundingContext: (surroundingContext || '').slice(0, 300),
+      createdAt: new Date().toISOString(),
+    };
+
+    all.unshift(newPhraseLike);
+    writePhraseLikes(all);
+
+    res.json({ success: true, phraseLike: newPhraseLike, isNew: true });
+  } catch (err: any) {
+    console.error('Failed to add phrase like:', err);
+    res.status(500).json({ error: 'フレーズいいねの保存に失敗しました' });
+  }
+});
+
+// フレーズいいね解除
+app.delete('/api/phrase-likes/:id', (req, res) => {
+  try {
+    const id = req.params.id;
+    const rawUserId = (req.query.userId as string) || (req.body?.userId as string);
+    const userId = rawUserId ? normalizeUserId(rawUserId) : undefined;
+
+    const all = readPhraseLikes();
+    const initialLen = all.length;
+    const updated = all.filter((item) => {
+      if (item.id !== id) return true;
+      if (userId && normalizeUserId(item.userId) !== userId) return true;
+      return false;
+    });
+
+    writePhraseLikes(updated);
+    res.json({ success: true, id, removed: updated.length < initialLen });
+  } catch (err: any) {
+    console.error('Failed to delete phrase like:', err);
+    res.status(500).json({ error: 'フレーズいいねの解除に失敗しました' });
+  }
+});
+
 // -------------------------------------------------------------
 // Vite ミドルウェア・サーバー起動
 // -------------------------------------------------------------
 async function startServer() {
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);

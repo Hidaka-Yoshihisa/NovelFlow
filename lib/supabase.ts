@@ -1,6 +1,6 @@
 // lib/supabase.ts
 import { createClient } from '@supabase/supabase-js';
-import type { Database, Profile, Novel, NovelPage, NovelWithDetails } from '@/types/database';
+import type { Database, Profile, Novel, NovelPage, NovelWithDetails, PhraseLike } from '@/types/database';
 
 const getEnvVar = (nextKey: string, viteKey: string): string => {
   if (typeof process !== 'undefined' && process.env && process.env[nextKey]) {
@@ -931,7 +931,9 @@ export const INITIAL_REGULAR_NOVELS: NovelWithDetails[] = [
    ========================================================================= */
 
 const LOCAL_STORAGE_KEY_NOVELS = 'novelflow_published_novels_v2';
-const LOCAL_STORAGE_KEY_LIKES = 'novelflow_user_likes_v2';
+const LOCAL_STORAGE_KEY_LIKES_PREFIX = 'novelflow_user_likes_v3_';
+const LOCAL_STORAGE_KEY_BOOKMARKS_PREFIX = 'novelflow_user_bookmarks_v3_';
+const LOCAL_STORAGE_KEY_PHRASE_LIKES_PREFIX = 'novelflow_user_phrase_likes_v1_';
 
 export function getLocalStoredNovels(): NovelWithDetails[] {
   if (typeof window === 'undefined') return [];
@@ -954,10 +956,11 @@ export function saveLocalStoredNovels(novels: NovelWithDetails[]): void {
   }
 }
 
-export function getLocalUserLikedIds(): Set<string> {
+export function getLocalUserLikedIds(userId?: string): Set<string> {
   if (typeof window === 'undefined') return new Set();
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY_LIKES);
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_KEY_LIKES_PREFIX}${effectiveId}`);
     if (!raw) return new Set();
     const arr = JSON.parse(raw);
     return new Set(Array.isArray(arr) ? arr : []);
@@ -966,13 +969,179 @@ export function getLocalUserLikedIds(): Set<string> {
   }
 }
 
-export function saveLocalUserLikedIds(ids: Set<string>): void {
+export function saveLocalUserLikedIds(ids: Set<string>, userId?: string): void {
   if (typeof window === 'undefined') return;
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
   try {
-    localStorage.setItem(LOCAL_STORAGE_KEY_LIKES, JSON.stringify(Array.from(ids)));
+    localStorage.setItem(
+      `${LOCAL_STORAGE_KEY_LIKES_PREFIX}${effectiveId}`,
+      JSON.stringify(Array.from(ids))
+    );
   } catch (err) {
     console.error('Failed to save likes to localStorage:', err);
   }
+}
+
+export function getLocalUserBookmarkedIds(userId?: string): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  try {
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_KEY_BOOKMARKS_PREFIX}${effectiveId}`);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveLocalUserBookmarkedIds(ids: Set<string>, userId?: string): void {
+  if (typeof window === 'undefined') return;
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  try {
+    localStorage.setItem(
+      `${LOCAL_STORAGE_KEY_BOOKMARKS_PREFIX}${effectiveId}`,
+      JSON.stringify(Array.from(ids))
+    );
+  } catch (err) {
+    console.error('Failed to save bookmarks to localStorage:', err);
+  }
+}
+
+export function getLocalUserPhraseLikes(userId?: string): PhraseLike[] {
+  if (typeof window === 'undefined') return [];
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  try {
+    const raw = localStorage.getItem(`${LOCAL_STORAGE_KEY_PHRASE_LIKES_PREFIX}${effectiveId}`);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveLocalUserPhraseLikes(phraseLikes: PhraseLike[], userId?: string): void {
+  if (typeof window === 'undefined') return;
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  try {
+    localStorage.setItem(
+      `${LOCAL_STORAGE_KEY_PHRASE_LIKES_PREFIX}${effectiveId}`,
+      JSON.stringify(phraseLikes)
+    );
+  } catch (err) {
+    console.error('Failed to save phrase likes to localStorage:', err);
+  }
+}
+
+/**
+ * サーバーからフレーズいいね一覧を取得
+ */
+export async function fetchUserPhraseLikes(
+  userId?: string,
+  novelId?: string
+): Promise<PhraseLike[]> {
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  try {
+    const url = new URL('/api/phrase-likes', window.location.origin);
+    url.searchParams.set('userId', effectiveId);
+    if (novelId) url.searchParams.set('novelId', novelId);
+
+    const res = await fetch(url.toString());
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.phraseLikes)) {
+        // 全体の場合はローカルストレージも更新
+        if (!novelId) {
+          saveLocalUserPhraseLikes(data.phraseLikes, effectiveId);
+        }
+        return data.phraseLikes;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to fetch phrase likes from server, fallback to local:', err);
+  }
+  const locals = getLocalUserPhraseLikes(effectiveId);
+  return novelId ? locals.filter((p) => p.novelId === novelId) : locals;
+}
+
+/**
+ * フレーズいいねを追加
+ */
+export async function createPhraseLike(
+  params: Omit<PhraseLike, 'id' | 'createdAt'>
+): Promise<PhraseLike> {
+  const effectiveId = getEffectiveUserId(params.userId ? { id: params.userId } : undefined);
+  const payload = { ...params, userId: effectiveId };
+
+  // ローカル先行追加
+  const localLikes = getLocalUserPhraseLikes(effectiveId);
+  const tempId = `pl-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+  const optimisticItem: PhraseLike = {
+    ...payload,
+    id: tempId,
+    createdAt: new Date().toISOString(),
+  };
+
+  // 重複がなければ追加
+  const isDuplicate = localLikes.some(
+    (item) =>
+      item.novelId === payload.novelId &&
+      item.pageNumber === payload.pageNumber &&
+      item.phrase.trim() === payload.phrase.trim()
+  );
+
+  if (!isDuplicate) {
+    const updated = [optimisticItem, ...localLikes];
+    saveLocalUserPhraseLikes(updated, effectiveId);
+  }
+
+  try {
+    const res = await fetch('/api/phrase-likes', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.phraseLike) {
+        // IDをサーバー側確定値に更新
+        const currentLocals = getLocalUserPhraseLikes(effectiveId);
+        const replaced = currentLocals.map((item) =>
+          item.id === tempId ? data.phraseLike : item
+        );
+        saveLocalUserPhraseLikes(replaced, effectiveId);
+        return data.phraseLike;
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to post phrase like to server:', err);
+  }
+
+  return optimisticItem;
+}
+
+/**
+ * フレーズいいねを解除
+ */
+export async function deletePhraseLike(id: string, userId?: string): Promise<boolean> {
+  const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  const localLikes = getLocalUserPhraseLikes(effectiveId);
+  const updated = localLikes.filter((item) => item.id !== id);
+  saveLocalUserPhraseLikes(updated, effectiveId);
+
+  try {
+    const res = await fetch(`/api/phrase-likes/${encodeURIComponent(id)}?userId=${encodeURIComponent(effectiveId)}`, {
+      method: 'DELETE',
+    });
+    if (res.ok) {
+      return true;
+    }
+  } catch (err) {
+    console.warn('Failed to delete phrase like on server:', err);
+  }
+
+  return true;
 }
 
 /**
@@ -1032,13 +1201,10 @@ export async function fetchAllNovels(userId?: string): Promise<{
         // ローカルキャッシュも最新化
         saveLocalStoredNovels([...data.shortNovels, ...data.regularNovels]);
 
-        // サーバー確定のいいね一覧を取得し、既存のローカル保持データとマージして消失を防ぐ
+        // サーバー確定のユーザー固有のいいね一覧でローカル保持データを完全同期（解除されたいいねを復活させない）
         const serverLiked = Array.isArray(data.userLikedIds) ? data.userLikedIds : [];
-        const localLiked = Array.from(getLocalUserLikedIds());
-        const mergedLiked = Array.from(new Set([...serverLiked, ...localLiked]));
-
-        saveLocalUserLikedIds(new Set(mergedLiked));
-        data.userLikedIds = mergedLiked;
+        saveLocalUserLikedIds(new Set(serverLiked), effectiveUserId);
+        data.userLikedIds = serverLiked;
         return data;
       }
     }
@@ -1195,7 +1361,8 @@ export async function toggleNovelLike(
   userId?: string,
   forceAction?: 'like' | 'unlike'
 ): Promise<{ likesCount: number; isLiked: boolean }> {
-  const localLikes = getLocalUserLikedIds();
+  const effectiveUserId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  const localLikes = getLocalUserLikedIds(effectiveUserId);
   const willBeLiked = forceAction !== undefined ? forceAction === 'like' : !localLikes.has(novelId);
 
   if (willBeLiked) {
@@ -1203,9 +1370,7 @@ export async function toggleNovelLike(
   } else {
     localLikes.delete(novelId);
   }
-  saveLocalUserLikedIds(localLikes);
-
-  const effectiveUserId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  saveLocalUserLikedIds(localLikes, effectiveUserId);
 
   try {
     const res = await fetch(`/api/novels/${novelId}/like`, {
@@ -1224,10 +1389,10 @@ export async function toggleNovelLike(
         typeof data.likesCount === 'number' ? data.likesCount : willBeLiked ? 1 : 0;
 
       // ローカルのいいね済みID一覧をサーバー確定値で最新化
-      const finalLikes = getLocalUserLikedIds();
+      const finalLikes = getLocalUserLikedIds(effectiveUserId);
       if (confirmedLiked) finalLikes.add(novelId);
       else finalLikes.delete(novelId);
-      saveLocalUserLikedIds(finalLikes);
+      saveLocalUserLikedIds(finalLikes, effectiveUserId);
 
       // キャッシュ済みの小説一覧のlikesCountも更新（リロード時にも保持）
       const cachedNovels = getLocalStoredNovels();
