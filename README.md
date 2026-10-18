@@ -108,12 +108,36 @@
 
 ```text
 novelflow/
-├── app/                  # アプリケーション基盤・ルーティング
-│   └── page.tsx          # メインページ（タブ管理・レコメンド統括・ボトムナビ）
-├── components/           # UIコンポーネント
-│   ├── NovelViewer.tsx         # ショート小説スワイプビューア（フレーズいいね連動）
+├── src/                  # アプリケーションソースコード（Vite SPA）
+│   ├── pages/            # 画面単位のページコンポーネント
+│   │   └── HomePage.tsx  # メインページ（タブ管理・各ビュー統合）
+│   ├── features/         # ドメインごとの機能モジュール
+│   │   ├── home/         # ホーム・一覧機能
+│   │   │   └── components/
+│   │   │       ├── HeaderNav.tsx     # ヘッダー・検索サジェスト・ナビゲーション
+│   │   │       ├── BottomNav.tsx     # モバイル用固定ボトムナビ
+│   │   │       ├── HomeTabView.tsx   # ショート・通常小説フィード
+│   │   │       ├── ExploreTabView.tsx# レコメンド一覧・ソート
+│   │   │       └── LibraryTabView.tsx# 通常小説ライブラリ一覧
+│   │   └── viewer/       # 没入型読書ビューア
+│   │       ├── NovelViewer.tsx       # ショート小説スワイプビューア本体
+│   │       ├── hooks/
+│   │       │   └── useNovelViewerGestures.ts # スワイプ・タップ・キーボード制御
+│   │       └── components/
+│   │           ├── NovelViewerHeader.tsx     # ヘッダー・文選択・フォント調整
+│   │           ├── NovelViewerSidebar.tsx    # アクションサイドバー（いいね・コメント等）
+│   │           ├── NovelViewerBottomBar.tsx  # 1pxプログレスバー・スワイプガイド
+│   │           ├── NovelSelectionPopups.tsx  # フレーズ選択・詳細・ハート演出
+│   │           └── NovelViewerModals.tsx     # 投げ銭・コメントシート・トースト
+│   ├── hooks/            # 共通Custom Hook群
+│   │   ├── useNovelFeed.ts           # 作品一覧・検索・いいね・しおり状態管理
+│   │   ├── usePhraseBookmark.ts      # フレーズいいね・ハイライト管理
+│   │   └── useNovelRecommendation.ts # リアルタイム嗜好分析・動的推薦ソート
+│   ├── App.tsx           # ルートコンポーネント（AuthProviderラップ）
+│   └── main.tsx          # エントリーポイント
+├── components/           # 共有UIコンポーネント・モーダル群
 │   ├── RegularNovelViewer.tsx  # 長編小説羊皮紙ビューア
-│   ├── PhraseLikesModal.tsx    # 保存したフレーズ・引用カード管理モーダル
+│   ├── PhraseLikesModal.tsx    # 保存したフレーズ・引用カード管理
 │   ├── MyPageModal.tsx         # マイページ（フォーマット別フィルター・読書履歴）
 │   ├── PublishModal.tsx        # 作品投稿・編集モーダル
 │   ├── AuthModal.tsx           # アカウント作成・切り替えモーダル
@@ -122,7 +146,6 @@ novelflow/
 │   ├── authContext.tsx   # ユーザー認証・プロフィール管理
 │   └── supabase.ts       # データアクセス層・リアクション同期
 ├── types/                # TypeScript型定義
-│   └── database.ts       # 作品・ユーザー・フレーズいいね等の型
 ├── data/                 # 初期シードデータ・永続化JSON
 ├── server.ts             # Express REST APIサーバー
 ├── vite.config.ts        # Vite設定
