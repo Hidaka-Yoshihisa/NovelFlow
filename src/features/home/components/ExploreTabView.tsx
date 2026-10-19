@@ -28,28 +28,17 @@ export function ExploreTabView({
     <div className="space-y-6 max-w-7xl mx-auto">
       {/* ヘッダーエリア */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-4 border-b border-[#142a1e]">
-        <div className="flex items-start gap-3">
+        <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-2xl bg-gradient-to-tr from-emerald-500 to-teal-400 flex items-center justify-center text-[#041a12] shadow-md shadow-emerald-950/50 shrink-0">
             <Compass className="w-5 h-5" />
           </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h2 className="text-xl sm:text-2xl font-bold text-white font-serif tracking-tight">
-                おすすめ作品
-              </h2>
-              <span className="text-[10px] sm:text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
-                パーソナライズ推薦
-              </span>
-            </div>
-            <p className="text-xs text-neutral-400 mt-1">
-              いいねした作品・フレーズのカテゴリ傾向から、あなただけの推薦順序をリアルタイム分析
-              <button
-                onClick={onOpenMyPage}
-                className="ml-2 text-emerald-400 hover:text-emerald-300 underline font-medium cursor-pointer"
-              >
-                （マイページで傾向を確認 →）
-              </button>
-            </p>
+          <div className="flex items-center gap-2">
+            <h2 className="text-xl sm:text-2xl font-bold text-white font-serif tracking-tight">
+              おすすめ作品
+            </h2>
+            <span className="text-[10px] sm:text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              パーソナライズ推薦
+            </span>
           </div>
         </div>
 

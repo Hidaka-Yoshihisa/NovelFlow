@@ -288,11 +288,12 @@ export function HeaderNav({
           <span className="xl:hidden hidden sm:inline">ガイド</span>
         </button>
 
-        {/* マイページ遷移ボタン */}
+
+        {/* マイページ遷移ボタン（スマホでは下部ナビに集約し、タブレット・PC版のみヘッダーに表示） */}
         <button
           id="header-mypage-button"
           onClick={onOpenMyPage}
-          className="flex items-center gap-1.5 px-3 py-1.5 sm:py-2 rounded-xl bg-[#0b1b13] hover:bg-[#132c20] border border-[#1d4230] text-neutral-200 hover:text-white text-xs font-semibold shadow-sm transition-all cursor-pointer group"
+          className="hidden sm:flex items-center gap-1.5 px-3 py-1.5 sm:py-2 rounded-xl bg-[#0b1b13] hover:bg-[#132c20] border border-[#1d4230] text-neutral-200 hover:text-white text-xs font-semibold shadow-sm transition-all cursor-pointer group"
           title="マイページを開く"
         >
           {currentUser?.avatar_url ? (
@@ -304,10 +305,9 @@ export function HeaderNav({
           ) : (
             <User className="w-3.5 h-3.5 text-emerald-400 shrink-0 group-hover:scale-110 transition-transform" />
           )}
-          <span className="hidden sm:inline max-w-[100px] truncate">
+          <span className="max-w-[100px] truncate">
             {currentUser?.username || 'マイページ'}
           </span>
-          <span className="sm:hidden">マイ</span>
         </button>
 
         {/* 新規アカウント作成ボタン */}
