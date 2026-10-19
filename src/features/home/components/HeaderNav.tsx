@@ -9,6 +9,7 @@ import {
   Home as HomeIcon,
   BookOpen,
   Compass,
+  HelpCircle,
 } from 'lucide-react';
 import { AppIcon } from '@/components/AppIcon';
 import type { NovelWithDetails } from '@/types/database';
@@ -26,6 +27,7 @@ interface HeaderNavProps {
   onOpenMyPage: () => void;
   onOpenAuth: () => void;
   onOpenPublish: () => void;
+  onOpenGuide: () => void;
   onSelectShort: (index: number) => void;
   onSelectRegular: (novel: NovelWithDetails) => void;
 }
@@ -42,6 +44,7 @@ export function HeaderNav({
   onOpenMyPage,
   onOpenAuth,
   onOpenPublish,
+  onOpenGuide,
   onSelectShort,
   onSelectRegular,
 }: HeaderNavProps) {
@@ -272,6 +275,17 @@ export function HeaderNav({
         >
           <Flame className="w-3.5 h-3.5" />
           <span className="hidden sm:inline">ショート</span>
+        </button>
+
+        {/* 使い方・機能ガイドボタン */}
+        <button
+          onClick={onOpenGuide}
+          className="flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 sm:py-2 rounded-xl bg-[#0b1b13] hover:bg-[#132c20] border border-[#1d4230] text-emerald-300 hover:text-emerald-200 text-xs font-semibold shadow-sm transition-all cursor-pointer group"
+          title="アプリの使い方・機能ガイドを開く"
+        >
+          <HelpCircle className="w-3.5 h-3.5 text-emerald-400 group-hover:scale-110 transition-transform shrink-0" />
+          <span className="hidden xl:inline">使い方ガイド</span>
+          <span className="xl:hidden hidden sm:inline">ガイド</span>
         </button>
 
         {/* マイページ遷移ボタン */}

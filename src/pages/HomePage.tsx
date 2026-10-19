@@ -15,11 +15,25 @@ import { BottomNav } from '@/src/features/home/components/BottomNav';
 import { HomeTabView } from '@/src/features/home/components/HomeTabView';
 import { ExploreTabView } from '@/src/features/home/components/ExploreTabView';
 import { LibraryTabView } from '@/src/features/home/components/LibraryTabView';
+import FeatureGuideModal, { GUIDE_STORAGE_KEY } from '@/src/features/guide/FeatureGuideModal';
 import type { NovelWithDetails } from '@/types/database';
 
 export default function HomePage() {
   const { currentUser, isAuthenticated } = useAuth();
   const [activeTab, setActiveTab] = useState<'home' | 'shorts' | 'library' | 'explore'>('home');
+  const [isGuideOpen, setIsGuideOpen] = useState(false);
+
+  // 初回アクセス時に限り機能ガイドを自動表示
+  React.useEffect(() => {
+    try {
+      const isDismissed = localStorage.getItem(GUIDE_STORAGE_KEY);
+      if (!isDismissed) {
+        setIsGuideOpen(true);
+      }
+    } catch (err) {
+      console.warn('Guide localStorage check error:', err);
+    }
+  }, []);
 
   // 1. 小説データ・いいね・しおり・検索 Custom Hook
   const {
@@ -169,6 +183,7 @@ export default function HomePage() {
           setIsAuthModalOpen(true);
         }}
         onOpenPublish={() => setIsPublishModalOpen(true)}
+        onOpenGuide={() => setIsGuideOpen(true)}
         onSelectShort={(index) => {
           setSelectedShortIndex(index);
           setSelectedShortPageIndex(0);
@@ -299,6 +314,7 @@ export default function HomePage() {
           setAuthModalMode('register');
           setIsAuthModalOpen(true);
         }}
+        onOpenGuide={() => setIsGuideOpen(true)}
         phraseLikes={userPhraseLikes}
         onRemovePhraseLike={handleRemovePhraseLike}
         recommendedNovels={recommendedNovels}
@@ -309,6 +325,23 @@ export default function HomePage() {
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         defaultMode={authModalMode}
+      />
+
+      {/* はじめてガイド・主要機能説明モーダル（初回アクセス時に自動表示 / 今後表示しない選択可能） */}
+      <FeatureGuideModal
+        isOpen={isGuideOpen}
+        onClose={() => {
+          setIsGuideOpen(false);
+          setActiveTab('home');
+        }}
+        onStart={() => {
+          setIsGuideOpen(false);
+          setActiveTab('home');
+          setSelectedRegularNovel(null);
+          setSelectedRegularChapterIndex(0);
+          setSelectedShortIndex(0);
+          setSelectedShortPageIndex(0);
+        }}
       />
     </div>
   );

@@ -24,6 +24,7 @@ import {
   Copy,
   Trash2,
   Compass,
+  HelpCircle,
 } from 'lucide-react';
 import { useAuth } from '@/lib/authContext';
 import type { NovelWithDetails, PhraseLike } from '@/types/database';
@@ -43,6 +44,7 @@ interface MyPageModalProps {
   onSelectRegular: (novel: NovelWithDetails, initialChapter?: number) => void;
   onOpenPublish: () => void;
   onOpenAuth: () => void;
+  onOpenGuide?: () => void;
   phraseLikes?: PhraseLike[];
   onRemovePhraseLike?: (id: string) => void;
   categoryStats?: {
@@ -73,6 +75,7 @@ export default function MyPageModal({
   onSelectRegular,
   onOpenPublish,
   onOpenAuth,
+  onOpenGuide,
   phraseLikes = [],
   onRemovePhraseLike,
   categoryStats,
@@ -363,6 +366,35 @@ export default function MyPageModal({
               </div>
             </div>
           </div>
+
+          {/* アプリの使い方・機能ガイド再確認ボタン */}
+          {onOpenGuide && (
+            <button
+              type="button"
+              onClick={() => {
+                onClose();
+                onOpenGuide();
+              }}
+              className="w-full py-2.5 px-4 rounded-2xl bg-[#0c1f16] hover:bg-[#122e21] border border-emerald-500/25 text-emerald-300 text-xs font-semibold flex items-center justify-between transition-all cursor-pointer group shadow-sm hover:border-emerald-500/40"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-6 h-6 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
+                  <HelpCircle className="w-3.5 h-3.5" />
+                </div>
+                <div className="text-left">
+                  <div className="font-bold text-white group-hover:text-emerald-200 transition-colors">
+                    NovelFlow の機能・使い方ガイド
+                  </div>
+                  <div className="text-[10px] text-neutral-400">
+                    スワイプ読書・フレーズいいね・推薦などの主要機能を確認
+                  </div>
+                </div>
+              </div>
+              <span className="text-[10px] text-emerald-300 bg-emerald-500/20 px-2.5 py-1 rounded-full border border-emerald-500/30 font-medium shrink-0 ml-2">
+                ガイドを開く →
+              </span>
+            </button>
+          )}
 
           {/* 読書傾向・好みのカテゴリ（いいね分析） */}
           {userCategoryStats.sortedCategories.length > 0 ? (
