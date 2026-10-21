@@ -1,0 +1,192 @@
+{
+  "entities": {
+    "Novel": {
+      "title": "Novel",
+      "description": "A short or regular novel with pages/chapters and author metadata.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the novel.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "author_id": {
+          "type": "string",
+          "description": "Author identifier.",
+          "maxLength": 128
+        },
+        "title": {
+          "type": "string",
+          "description": "Title of the novel.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "synopsis": {
+          "type": "string",
+          "description": "Short summary or catchphrase of the novel.",
+          "maxLength": 1000
+        },
+        "status": {
+          "type": "string",
+          "description": "Publication status.",
+          "enum": ["published", "draft"]
+        },
+        "type": {
+          "type": "string",
+          "description": "Novel format type.",
+          "enum": ["short", "regular"]
+        },
+        "category": {
+          "type": "string",
+          "description": "Genre category of the novel.",
+          "maxLength": 50
+        },
+        "created_at": {
+          "type": "string",
+          "description": "ISO timestamp when the novel was created.",
+          "maxLength": 64
+        },
+        "author": {
+          "type": "object",
+          "description": "Author profile snapshot."
+        },
+        "likesCount": {
+          "type": "number",
+          "description": "Total number of likes."
+        },
+        "commentsCount": {
+          "type": "number",
+          "description": "Total number of comments."
+        },
+        "tipsTotal": {
+          "type": "number",
+          "description": "Total tip amount."
+        },
+        "pages": {
+          "type": "array",
+          "description": "Ordered pages or chapters of the novel."
+        }
+      },
+      "required": [
+        "id",
+        "author_id",
+        "title",
+        "synopsis",
+        "status",
+        "type",
+        "category",
+        "created_at",
+        "author",
+        "likesCount",
+        "commentsCount",
+        "tipsTotal",
+        "pages"
+      ]
+    },
+    "NovelLike": {
+      "title": "NovelLike",
+      "description": "Tracks whether a user liked a specific novel.",
+      "type": "object",
+      "properties": {
+        "novelId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "isLiked": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["novelId", "userId", "isLiked", "updatedAt"]
+    },
+    "PhraseLike": {
+      "title": "PhraseLike",
+      "description": "A highlighted phrase saved from a novel page.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "novelId": {
+          "type": "string",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "novelTitle": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "novelCategory": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "authorName": {
+          "type": "string",
+          "maxLength": 60
+        },
+        "pageNumber": {
+          "type": "number"
+        },
+        "chapterTitle": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "phrase": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "surroundingContext": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "novelId",
+        "novelTitle",
+        "novelCategory",
+        "authorName",
+        "pageNumber",
+        "phrase",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/novels/{novelId}": {
+      "schema": "Novel",
+      "description": "Published short and regular novels shared across all environments and URLs."
+    },
+    "/novel_likes/{likeId}": {
+      "schema": "NovelLike",
+      "description": "User like states per novel."
+    },
+    "/phrase_likes/{phraseLikeId}": {
+      "schema": "PhraseLike",
+      "description": "Highlighted and bookmarked phrases from novels."
+    }
+  }
+}

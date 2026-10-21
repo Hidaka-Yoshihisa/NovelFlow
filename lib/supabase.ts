@@ -944,9 +944,25 @@ const LOCAL_STORAGE_KEY_PHRASE_LIKES_PREFIX = 'novelflow_user_phrase_likes_v1_';
 export function getLocalStoredNovels(): NovelWithDetails[] {
   if (typeof window === 'undefined') return [];
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_KEY_NOVELS);
-    if (!raw) return [];
-    return JSON.parse(raw);
+    const keys = [
+      LOCAL_STORAGE_KEY_NOVELS,
+      'novelflow_published_novels_v1',
+      'novelflow_published_novels',
+    ];
+    const map = new Map<string, NovelWithDetails>();
+    for (const key of keys) {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          if (item && item.id && !map.has(item.id)) {
+            map.set(item.id, item);
+          }
+        }
+      }
+    }
+    return Array.from(map.values());
   } catch (err) {
     console.error('Failed to read from localStorage:', err);
     return [];
@@ -1048,6 +1064,25 @@ export async function fetchUserPhraseLikes(
   novelId?: string
 ): Promise<PhraseLike[]> {
   const effectiveId = getEffectiveUserId(userId ? { id: userId } : undefined);
+  const localLikes = getLocalUserPhraseLikes(effectiveId);
+
+  // 1. Firebase Firestore から取得（開発環境・共有URLの双方で同期）
+  if (typeof window !== 'undefined') {
+    try {
+      const { fetchPhraseLikesFromFirestore } = await import('./firestoreService');
+      const firestoreLikes = await fetchPhraseLikesFromFirestore(effectiveId, novelId);
+      if (firestoreLikes.length > 0) {
+        if (!novelId) {
+          saveLocalUserPhraseLikes(firestoreLikes, effectiveId);
+        }
+        return firestoreLikes;
+      }
+    } catch (err) {
+      console.warn('Firestore phrase likes fetch fallback:', err);
+    }
+  }
+
+  // 2. サーバーAPIから取得
   try {
     const url = new URL('/api/phrase-likes', window.location.origin);
     url.searchParams.set('userId', effectiveId);
@@ -1056,8 +1091,7 @@ export async function fetchUserPhraseLikes(
     const res = await fetch(url.toString());
     if (res.ok) {
       const data = await res.json();
-      if (Array.isArray(data.phraseLikes)) {
-        // 全体の場合はローカルストレージも更新
+      if (Array.isArray(data.phraseLikes) && data.phraseLikes.length > 0) {
         if (!novelId) {
           saveLocalUserPhraseLikes(data.phraseLikes, effectiveId);
         }
@@ -1067,12 +1101,12 @@ export async function fetchUserPhraseLikes(
   } catch (err) {
     console.warn('Failed to fetch phrase likes from server, fallback to local:', err);
   }
-  const locals = getLocalUserPhraseLikes(effectiveId);
-  return novelId ? locals.filter((p) => p.novelId === novelId) : locals;
+
+  return novelId ? localLikes.filter((p) => p.novelId === novelId) : localLikes;
 }
 
 /**
- * フレーズいいねを追加
+ * フレーズいいねを追加（Firestore + サーバーAPI + ローカルストレージ）
  */
 export async function createPhraseLike(
   params: Omit<PhraseLike, 'id' | 'createdAt'>
@@ -1098,7 +1132,7 @@ export async function createPhraseLike(
   // ローカル先行追加
   const localLikes = getLocalUserPhraseLikes(effectiveId);
   const tempId = `pl-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
-  const optimisticItem: PhraseLike = {
+  let confirmedItem: PhraseLike = {
     ...payload,
     id: tempId,
     createdAt: new Date().toISOString(),
@@ -1113,10 +1147,21 @@ export async function createPhraseLike(
   );
 
   if (!isDuplicate) {
-    const updated = [optimisticItem, ...localLikes];
+    const updated = [confirmedItem, ...localLikes];
     saveLocalUserPhraseLikes(updated, effectiveId);
   }
 
+  // 1. Firebase Firestore へ保存
+  if (typeof window !== 'undefined') {
+    try {
+      const { savePhraseLikeToFirestore } = await import('./firestoreService');
+      confirmedItem = await savePhraseLikeToFirestore(confirmedItem);
+    } catch (err) {
+      console.warn('Failed to save phrase like to Firestore:', err);
+    }
+  }
+
+  // 2. サーバーAPIへ保存
   try {
     const res = await fetch('/api/phrase-likes', {
       method: 'POST',
@@ -1126,20 +1171,18 @@ export async function createPhraseLike(
     if (res.ok) {
       const data = await res.json();
       if (data.phraseLike) {
-        // IDをサーバー側確定値に更新
         const currentLocals = getLocalUserPhraseLikes(effectiveId);
         const replaced = currentLocals.map((item) =>
-          item.id === tempId ? data.phraseLike : item
+          item.id === tempId ? confirmedItem : item
         );
         saveLocalUserPhraseLikes(replaced, effectiveId);
-        return data.phraseLike;
       }
     }
   } catch (err) {
     console.warn('Failed to post phrase like to server:', err);
   }
 
-  return optimisticItem;
+  return confirmedItem;
 }
 
 /**
@@ -1150,6 +1193,15 @@ export async function deletePhraseLike(id: string, userId?: string): Promise<boo
   const localLikes = getLocalUserPhraseLikes(effectiveId);
   const updated = localLikes.filter((item) => item.id !== id);
   saveLocalUserPhraseLikes(updated, effectiveId);
+
+  if (typeof window !== 'undefined') {
+    try {
+      const { removePhraseLikeFromFirestore } = await import('./firestoreService');
+      await removePhraseLikeFromFirestore(id);
+    } catch (err) {
+      console.warn('Failed to delete phrase like from Firestore:', err);
+    }
+  }
 
   try {
     const res = await fetch(`/api/phrase-likes/${encodeURIComponent(id)}?userId=${encodeURIComponent(effectiveId)}`, {
@@ -1200,7 +1252,57 @@ export function getEffectiveUserId(currentUser?: { id?: string } | null): string
 }
 
 /**
- * 小説一覧の取得（サーバーAPI最優先、全端末のいいね数・投稿作品・ユーザーのいいね状態を完全同期）
+ * 初期作品・ローカル/サーバー作品・Firestore作品を重複なく統合し、新規投稿を先頭に並べるヘルパー
+ */
+export function mergeNovelCollections(
+  firestoreNovels: NovelWithDetails[],
+  secondaryNovels: NovelWithDetails[] = []
+): {
+  shortNovels: NovelWithDetails[];
+  regularNovels: NovelWithDetails[];
+} {
+  const initialIds = new Set([
+    ...INITIAL_SHORT_NOVELS.map((n) => n.id),
+    ...INITIAL_REGULAR_NOVELS.map((n) => n.id),
+  ]);
+
+  const map = new Map<string, NovelWithDetails>();
+
+  // 1. 初期作品をベースとして登録
+  for (const n of [...INITIAL_SHORT_NOVELS, ...INITIAL_REGULAR_NOVELS]) {
+    map.set(n.id, n);
+  }
+
+  // 2. ローカル/サーバーの作品をマージ
+  for (const n of secondaryNovels) {
+    if (n && n.id) {
+      map.set(n.id, sanitizeNovelData(n));
+    }
+  }
+
+  // 3. Firestoreの最新データを最優先で上書きマージ
+  for (const n of firestoreNovels) {
+    if (n && n.id) {
+      map.set(n.id, sanitizeNovelData(n));
+    }
+  }
+
+  const allMerged = Array.from(map.values());
+  const customNovels = allMerged
+    .filter((n) => !initialIds.has(n.id))
+    .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+
+  const initialUpdated = allMerged.filter((n) => initialIds.has(n.id));
+  const ordered = [...customNovels, ...initialUpdated];
+
+  return {
+    shortNovels: ordered.filter((n) => n.type === 'short'),
+    regularNovels: ordered.filter((n) => n.type !== 'short'),
+  };
+}
+
+/**
+ * 小説一覧の取得（Firebase Firestore + サーバーAPI + ローカルキャッシュを完全統合）
  */
 export async function fetchAllNovels(userId?: string): Promise<{
   shortNovels: NovelWithDetails[];
@@ -1209,101 +1311,79 @@ export async function fetchAllNovels(userId?: string): Promise<{
   likesCounts?: Record<string, number>;
 }> {
   const effectiveUserId = getEffectiveUserId(userId ? { id: userId } : undefined);
-  const url = effectiveUserId
-    ? `/api/novels?userId=${encodeURIComponent(effectiveUserId)}`
-    : '/api/novels';
+  const existingLocals = getLocalStoredNovels();
+  let serverNovels: NovelWithDetails[] = [];
+  let serverLikedIds: string[] = [];
 
-  // 1. サーバーAPIから最新データ（他端末の投稿作品・最新いいね数を含む）を取得
+  // 1. サーバーAPIから取得
   try {
+    const url = effectiveUserId
+      ? `/api/novels?userId=${encodeURIComponent(effectiveUserId)}`
+      : '/api/novels';
     const res = await fetch(url);
     if (res.ok) {
       const data = await res.json();
       if (data && Array.isArray(data.shortNovels) && Array.isArray(data.regularNovels)) {
-        // ローカルキャッシュも最新化
-        saveLocalStoredNovels([...data.shortNovels, ...data.regularNovels]);
-
-        // サーバー確定のユーザー固有のいいね一覧でローカル保持データを完全同期（解除されたいいねを復活させない）
-        const serverLiked = Array.isArray(data.userLikedIds) ? data.userLikedIds : [];
-        saveLocalUserLikedIds(new Set(serverLiked), effectiveUserId);
-        data.userLikedIds = serverLiked;
-        return data;
+        serverNovels = [...data.shortNovels, ...data.regularNovels];
+        if (Array.isArray(data.userLikedIds)) {
+          serverLikedIds = data.userLikedIds;
+        }
       }
     }
   } catch (err) {
-    console.warn('Server fetch error, falling back to local storage:', err);
+    console.warn('Server fetch error, continuing with Firestore/local:', err);
   }
 
-  // 2. Supabaseが設定されていればSupabaseから取得
-  if (isSupabaseConfigured) {
+  // 2. Firebase Firestore から取得 ＆ 既存のローカル/サーバー投稿作品をFirestoreへ自動マイグレーション
+  let firestoreNovels: NovelWithDetails[] = [];
+  let firestoreLikedIds: string[] = [];
+
+  if (typeof window !== 'undefined') {
     try {
-      const { data: novelsData, error: novelsError } = await supabase
-        .from('novels')
-        .select('*')
-        .eq('status', 'published')
-        .order('created_at', { ascending: false });
+      const {
+        fetchNovelsFromFirestore,
+        syncLocalNovelsToFirestore,
+        fetchUserLikedIdsFromFirestore,
+      } = await import('./firestoreService');
 
-      const list = (novelsData as Novel[] | null) || [];
-      if (!novelsError && list.length > 0) {
-        const novelIds = list.map((n) => n.id);
-        const { data: pagesData } = await supabase
-          .from('novel_pages')
-          .select('*')
-          .in('novel_id', novelIds)
-          .order('page_number', { ascending: true });
-
-        const typedPages = (pagesData as NovelPage[] | null) || [];
-        const pagesMap = new Map<string, NovelPage[]>();
-        typedPages.forEach((p) => {
-          const arr = pagesMap.get(p.novel_id) || [];
-          arr.push(p);
-          pagesMap.set(p.novel_id, arr);
-        });
-
-        const combined: NovelWithDetails[] = list.map((n) => ({
-          ...n,
-          author: {
-            id: n.author_id,
-            username: '作家',
-            avatar_url: null,
-          },
-          pages: pagesMap.get(n.id) || [
-            { id: `p-${n.id}`, novel_id: n.id, page_number: 1, content: n.synopsis || '' },
-          ],
-          likesCount: 0,
-          commentsCount: 0,
-          tipsTotal: 0,
-        }));
-
-        const shorts = combined.filter((n) => n.type === 'short');
-        const regulars = combined.filter((n) => n.type !== 'short');
-
-        return {
-          shortNovels: shorts.length > 0 ? shorts : INITIAL_SHORT_NOVELS,
-          regularNovels: regulars.length > 0 ? regulars : INITIAL_REGULAR_NOVELS,
-        };
+      const initialIds = new Set([
+        ...INITIAL_SHORT_NOVELS.map((n) => n.id),
+        ...INITIAL_REGULAR_NOVELS.map((n) => n.id),
+      ]);
+      const candidatesToSync = [...existingLocals, ...serverNovels].filter(
+        (n) => n && n.id && !initialIds.has(n.id)
+      );
+      if (candidatesToSync.length > 0) {
+        await syncLocalNovelsToFirestore(candidatesToSync);
       }
+
+      firestoreNovels = await fetchNovelsFromFirestore();
+      firestoreLikedIds = await fetchUserLikedIdsFromFirestore(effectiveUserId);
     } catch (err) {
-      console.warn('Supabase fetch failed, falling back to local defaults:', err);
+      console.warn('Firestore fetch fallback:', err);
     }
   }
 
-  // 3. ローカルストレージフォールバック
-  const localList = getLocalStoredNovels();
-  const userShorts = localList.filter((n) => n.type === 'short');
-  const userRegulars = localList.filter((n) => n.type !== 'short');
+  const { shortNovels, regularNovels } = mergeNovelCollections(firestoreNovels, [
+    ...existingLocals,
+    ...serverNovels,
+  ]);
 
-  const combinedShorts = [
-    ...userShorts,
-    ...INITIAL_SHORT_NOVELS.filter((s) => !userShorts.some((u) => u.id === s.id)),
-  ];
-  const combinedRegulars = [
-    ...userRegulars,
-    ...INITIAL_REGULAR_NOVELS.filter((r) => !userRegulars.some((u) => u.id === r.id)),
-  ];
+  saveLocalStoredNovels([...shortNovels, ...regularNovels]);
+
+  const combinedLikedIds = Array.from(
+    new Set([
+      ...Array.from(getLocalUserLikedIds(effectiveUserId)),
+      ...serverLikedIds,
+      ...firestoreLikedIds,
+    ])
+  );
+  saveLocalUserLikedIds(new Set(combinedLikedIds), effectiveUserId);
 
   return {
-    shortNovels: combinedShorts,
-    regularNovels: combinedRegulars,
+    shortNovels,
+    regularNovels,
+    userLikedIds: combinedLikedIds,
   };
 }
 
@@ -1331,7 +1411,9 @@ export async function publishNovel(params: {
     })),
   };
 
-  // 1. サーバーAPIへPOST（全端末・再読み込み後も保持されるように）
+  let createdNovel: NovelWithDetails | null = null;
+
+  // 1. サーバーAPIへPOST
   try {
     const res = await fetch('/api/novels', {
       method: 'POST',
@@ -1341,10 +1423,7 @@ export async function publishNovel(params: {
     if (res.ok) {
       const data = await res.json();
       if (data && data.novel) {
-        const cleanNovel = sanitizeNovelData(data.novel);
-        const currentList = getLocalStoredNovels();
-        saveLocalStoredNovels([cleanNovel, ...currentList.filter((n) => n.id !== cleanNovel.id)]);
-        return cleanNovel;
+        createdNovel = sanitizeNovelData(data.novel);
       }
     } else if (res.status === 400 || res.status === 429) {
       const errData = await res.json().catch(() => ({}));
@@ -1354,43 +1433,56 @@ export async function publishNovel(params: {
     if (err instanceof Error && (err.message.includes('入力') || err.message.includes('上限') || err.message.includes('制限') || err.message.includes('タイトル'))) {
       throw err;
     }
-    console.warn('Server publish error, saving locally:', err);
+    console.warn('Server publish error, falling back to direct Firestore/local:', err);
   }
 
-  // 2. サーバー接続できない場合のローカルフォールバック
-  const newNovelId = `user-${Date.now()}`;
-  const authorId = `author-${Date.now()}`;
+  // 2. サーバー側でIDが生成されなかった場合の生成
+  if (!createdNovel) {
+    const newNovelId = `novel-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const authorId = `author-${Date.now()}`;
 
-  const newNovel: NovelWithDetails = sanitizeNovelData({
-    id: newNovelId,
-    author_id: authorId,
-    title: sanitizedPayload.title,
-    synopsis: sanitizedPayload.synopsis,
-    status: 'published',
-    type: sanitizedPayload.type,
-    category: sanitizedPayload.category,
-    created_at: new Date().toISOString(),
-    author: {
-      id: authorId,
-      username: sanitizedPayload.authorName,
-      avatar_url: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`,
-    },
-    likesCount: 0,
-    commentsCount: 0,
-    tipsTotal: 0,
-    pages: sanitizedPayload.pages.map((p, idx) => ({
-      id: `p-${newNovelId}-${idx + 1}`,
-      novel_id: newNovelId,
-      page_number: p.page_number || idx + 1,
-      chapter_title: p.chapter_title || null,
-      content: p.content,
-    })),
-  });
+    createdNovel = sanitizeNovelData({
+      id: newNovelId,
+      author_id: authorId,
+      title: sanitizedPayload.title,
+      synopsis: sanitizedPayload.synopsis,
+      status: 'published',
+      type: sanitizedPayload.type,
+      category: sanitizedPayload.category,
+      created_at: new Date().toISOString(),
+      author: {
+        id: authorId,
+        username: sanitizedPayload.authorName,
+        avatar_url: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`,
+      },
+      likesCount: 0,
+      commentsCount: 0,
+      tipsTotal: 0,
+      pages: sanitizedPayload.pages.map((p, idx) => ({
+        id: `p-${newNovelId}-${idx + 1}`,
+        novel_id: newNovelId,
+        page_number: p.page_number || idx + 1,
+        chapter_title: p.chapter_title || null,
+        content: p.content,
+      })),
+    });
+  }
 
+  // 3. Firebase Firestore へ永続化（開発環境 ais-dev と 共有URL ais-pre の双方で即時同期）
+  if (typeof window !== 'undefined') {
+    try {
+      const { saveNovelToFirestore } = await import('./firestoreService');
+      createdNovel = await saveNovelToFirestore(createdNovel);
+    } catch (firestoreErr) {
+      console.error('Failed to persist novel to Firestore:', firestoreErr);
+    }
+  }
+
+  // 4. ローカルストレージにもバックアップ
   const currentList = getLocalStoredNovels();
-  saveLocalStoredNovels([newNovel, ...currentList]);
+  saveLocalStoredNovels([createdNovel, ...currentList.filter((n) => n.id !== createdNovel!.id)]);
 
-  return newNovel;
+  return createdNovel;
 }
 
 /**
@@ -1412,6 +1504,33 @@ export async function toggleNovelLike(
   }
   saveLocalUserLikedIds(localLikes, effectiveUserId);
 
+  const cachedNovels = getLocalStoredNovels();
+  const fallbackNovel =
+    cachedNovels.find((n) => n.id === novelId) ||
+    INITIAL_SHORT_NOVELS.find((n) => n.id === novelId) ||
+    INITIAL_REGULAR_NOVELS.find((n) => n.id === novelId);
+
+  let confirmedLiked = willBeLiked;
+  let confirmedCount = willBeLiked ? 1 : 0;
+
+  // 1. Firebase Firestore へいいね状態を即時保存・更新
+  if (typeof window !== 'undefined') {
+    try {
+      const { toggleNovelLikeInFirestore } = await import('./firestoreService');
+      const fsResult = await toggleNovelLikeInFirestore(
+        novelId,
+        effectiveUserId,
+        willBeLiked ? 'like' : 'unlike',
+        fallbackNovel
+      );
+      confirmedLiked = fsResult.isLiked;
+      confirmedCount = fsResult.likesCount;
+    } catch (err) {
+      console.warn('Firestore like sync fallback:', err);
+    }
+  }
+
+  // 2. サーバーAPIへも同期
   try {
     const res = await fetch(`/api/novels/${novelId}/like`, {
       method: 'POST',
@@ -1424,37 +1543,30 @@ export async function toggleNovelLike(
 
     if (res.ok) {
       const data = await res.json();
-      const confirmedLiked = Boolean(data.isLiked);
-      const confirmedCount =
-        typeof data.likesCount === 'number' ? data.likesCount : willBeLiked ? 1 : 0;
-
-      // ローカルのいいね済みID一覧をサーバー確定値で最新化
-      const finalLikes = getLocalUserLikedIds(effectiveUserId);
-      if (confirmedLiked) finalLikes.add(novelId);
-      else finalLikes.delete(novelId);
-      saveLocalUserLikedIds(finalLikes, effectiveUserId);
-
-      // キャッシュ済みの小説一覧のlikesCountも更新（リロード時にも保持）
-      const cachedNovels = getLocalStoredNovels();
-      if (cachedNovels.length > 0) {
-        const updated = cachedNovels.map((n) =>
-          n.id === novelId ? { ...n, likesCount: confirmedCount } : n
-        );
-        saveLocalStoredNovels(updated);
+      confirmedLiked = Boolean(data.isLiked);
+      if (typeof data.likesCount === 'number') {
+        confirmedCount = Math.max(confirmedCount, data.likesCount);
       }
-
-      return {
-        likesCount: confirmedCount,
-        isLiked: confirmedLiked,
-      };
     }
   } catch (err) {
     console.warn('Failed to sync like to server:', err);
   }
 
+  const finalLikes = getLocalUserLikedIds(effectiveUserId);
+  if (confirmedLiked) finalLikes.add(novelId);
+  else finalLikes.delete(novelId);
+  saveLocalUserLikedIds(finalLikes, effectiveUserId);
+
+  if (cachedNovels.length > 0) {
+    const updated = cachedNovels.map((n) =>
+      n.id === novelId ? { ...n, likesCount: confirmedCount } : n
+    );
+    saveLocalStoredNovels(updated);
+  }
+
   return {
-    likesCount: willBeLiked ? 1 : 0,
-    isLiked: willBeLiked,
+    likesCount: confirmedCount,
+    isLiked: confirmedLiked,
   };
 }
 

@@ -1,0 +1,6 @@
+{
+  "summary":  "Firebase Firestoreによる小説投稿・いいね・フレーズハイライトのリアルタイム永続化および全URL間（開発環境・共有URL・全端末）での完全同期実装計画",
+  "updatedAt":  "2026-10-21T12:31:19.840232361Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

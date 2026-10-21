@@ -1,0 +1,154 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidNovel(data) {
+      return data.keys().hasAll([
+        'id',
+        'author_id',
+        'title',
+        'synopsis',
+        'status',
+        'type',
+        'category',
+        'created_at',
+        'author',
+        'likesCount',
+        'commentsCount',
+        'tipsTotal',
+        'pages'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'author_id',
+        'title',
+        'synopsis',
+        'status',
+        'type',
+        'category',
+        'created_at',
+        'author',
+        'likesCount',
+        'commentsCount',
+        'tipsTotal',
+        'pages'
+      ]) &&
+      data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.author_id is string && data.author_id.size() >= 1 && data.author_id.size() <= 128 &&
+      data.title is string && data.title.size() >= 1 && data.title.size() <= 120 &&
+      data.synopsis is string && data.synopsis.size() <= 1000 &&
+      data.status in ['published', 'draft'] &&
+      data.type in ['short', 'regular'] &&
+      data.category is string && data.category.size() >= 1 && data.category.size() <= 50 &&
+      data.created_at is string && data.created_at.size() >= 1 && data.created_at.size() <= 64 &&
+      data.author is map &&
+      data.likesCount is number && data.likesCount >= 0 &&
+      data.commentsCount is number && data.commentsCount >= 0 &&
+      data.tipsTotal is number && data.tipsTotal >= 0 &&
+      data.pages is list && data.pages.size() >= 1 && data.pages.size() <= 50 &&
+      data.pages[0] is map;
+    }
+
+    function isValidNovelLike(data) {
+      return data.keys().hasAll(['novelId', 'userId', 'isLiked', 'updatedAt']) &&
+      data.keys().hasOnly(['novelId', 'userId', 'isLiked', 'updatedAt']) &&
+      data.novelId is string && data.novelId.size() >= 1 && data.novelId.size() <= 128 && data.novelId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.isLiked is bool &&
+      data.updatedAt is string && data.updatedAt.size() >= 1 && data.updatedAt.size() <= 64;
+    }
+
+    function isValidPhraseLike(data) {
+      return data.keys().hasAll([
+        'id',
+        'userId',
+        'novelId',
+        'novelTitle',
+        'novelCategory',
+        'authorName',
+        'pageNumber',
+        'phrase',
+        'createdAt'
+      ]) &&
+      data.keys().hasOnly([
+        'id',
+        'userId',
+        'novelId',
+        'novelTitle',
+        'novelCategory',
+        'authorName',
+        'pageNumber',
+        'chapterTitle',
+        'phrase',
+        'surroundingContext',
+        'createdAt'
+      ]) &&
+      data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.novelId is string && data.novelId.size() >= 1 && data.novelId.size() <= 128 && data.novelId.matches('^[a-zA-Z0-9_\\-]+$') &&
+      data.novelTitle is string && data.novelTitle.size() >= 1 && data.novelTitle.size() <= 120 &&
+      data.novelCategory is string && data.novelCategory.size() >= 1 && data.novelCategory.size() <= 50 &&
+      data.authorName is string && data.authorName.size() >= 1 && data.authorName.size() <= 60 &&
+      data.pageNumber is number && data.pageNumber >= 1 && data.pageNumber <= 500 &&
+      (!('chapterTitle' in data) || data.chapterTitle == null || (data.chapterTitle is string && data.chapterTitle.size() <= 100)) &&
+      data.phrase is string && data.phrase.size() >= 1 && data.phrase.size() <= 500 &&
+      (!('surroundingContext' in data) || data.surroundingContext == null || (data.surroundingContext is string && data.surroundingContext.size() <= 500)) &&
+      data.createdAt is string && data.createdAt.size() >= 1 && data.createdAt.size() <= 64;
+    }
+
+    // Boot connection verification doc
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Published novels shared across Dev & Shared URLs
+    match /novels/{novelId} {
+      allow get: if isValidId(novelId) && existing().status == 'published';
+      allow list: if existing().status == 'published';
+      allow create: if isValidId(novelId) && incoming().id == novelId && isValidNovel(incoming());
+      allow update: if isValidId(novelId) &&
+        isValidNovel(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().author_id == existing().author_id &&
+        incoming().created_at == existing().created_at &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['likesCount', 'commentsCount', 'tipsTotal']);
+    }
+
+    // User likes per novel
+    match /novel_likes/{likeId} {
+      allow get: if isValidId(likeId);
+      allow list: if existing().userId is string && existing().userId.size() <= 128;
+      allow create: if isValidId(likeId) && isValidNovelLike(incoming());
+      allow update: if isValidId(likeId) &&
+        isValidNovelLike(incoming()) &&
+        incoming().novelId == existing().novelId &&
+        incoming().userId == existing().userId &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['isLiked', 'updatedAt']);
+    }
+
+    // Phrase highlights
+    match /phrase_likes/{phraseLikeId} {
+      allow get: if isValidId(phraseLikeId);
+      allow list: if existing().userId is string && existing().userId.size() <= 128;
+      allow create: if isValidId(phraseLikeId) && incoming().id == phraseLikeId && isValidPhraseLike(incoming());
+      allow delete: if isValidId(phraseLikeId);
+    }
+  }
+}

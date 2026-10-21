@@ -9,7 +9,11 @@ import {
   getLocalUserBookmarkedIds,
   saveLocalUserBookmarkedIds,
   getEffectiveUserId,
+  getLocalStoredNovels,
+  saveLocalStoredNovels,
+  mergeNovelCollections,
 } from '@/lib/supabase';
+import { subscribePublishedNovels } from '@/lib/firestoreService';
 import type { UserAccount } from '@/lib/authContext';
 
 interface UseNovelFeedOptions {
@@ -32,7 +36,7 @@ export function useNovelFeed({ currentUser }: UseNovelFeedOptions) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
 
-  // 小説データの読み込み（サーバーから全ユーザーのいいね数と自分自身のいいね状態を完全復元）
+  // 小説データの読み込み（Firestore + サーバーAPI + ローカルキャッシュを完全統合）
   const loadNovels = async () => {
     try {
       setLoading(true);
@@ -60,7 +64,23 @@ export function useNovelFeed({ currentUser }: UseNovelFeedOptions) {
     loadNovels();
   }, [currentUser?.id]);
 
-  // いいね切り替え処理（UI即時楽観的更新 ＋ サーバー永続化 ＋ 全端末同期）
+  // Firebase Firestore リアルタイム購読（開発環境 ais-dev と 共有URL ais-pre の双方で即時反映）
+  useEffect(() => {
+    const unsubscribe = subscribePublishedNovels((firestoreNovels) => {
+      const localList = getLocalStoredNovels();
+      const merged = mergeNovelCollections(firestoreNovels, localList);
+      setShortNovels(merged.shortNovels);
+      setRegularNovels(merged.regularNovels);
+      saveLocalStoredNovels([...merged.shortNovels, ...merged.regularNovels]);
+      setLoading(false);
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, []);
+
+  // いいね切り替え処理（UI即時楽観的更新 ＋ Firestore & サーバー永続化 ＋ 全端末同期）
   const handleToggleLike = async (
     novelId: string,
     selectedRegularNovel?: NovelWithDetails | null,
@@ -147,8 +167,6 @@ export function useNovelFeed({ currentUser }: UseNovelFeedOptions) {
       setRegularNovels((prev) => [newNovel, ...prev.filter((n) => n.id !== newNovel.id)]);
       onNavigateRegular?.(newNovel);
     }
-    // サーバーの最新データとも再同期
-    loadNovels();
   };
 
   // ショート小説の検索フィルタリング
