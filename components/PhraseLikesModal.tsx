@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Heart, Copy, Check, ExternalLink, Trash2, Quote, Sparkles } from 'lucide-react';
 import type { PhraseLike } from '@/types/database';
+import { sanitizeText } from '@/src/utils/sanitize';
 
 interface PhraseLikesModalProps {
   isOpen: boolean;
@@ -125,7 +126,7 @@ export default function PhraseLikesModal({
                   <div className="flex items-center justify-between gap-2 mb-2">
                     <div className="flex items-center gap-2">
                       <span className="text-[10px] px-2 py-0.5 rounded-md font-sans font-semibold bg-[#2e1f14] text-[#d6b998] border border-[#443020]">
-                        {item.chapterTitle || `${item.pageNumber}ページ目`}
+                        {sanitizeText(item.chapterTitle, 100) || `${item.pageNumber}ページ目`}
                       </span>
                       {isCurrent && (
                         <span className="text-[10px] text-amber-400 font-sans font-bold flex items-center gap-1">
@@ -143,7 +144,7 @@ export default function PhraseLikesModal({
 
                   {/* 引用文 */}
                   <blockquote className="text-sm text-[#f7f2ea] font-serif leading-relaxed pl-3 border-l-2 border-rose-400/80 my-2.5 whitespace-pre-wrap">
-                    {item.phrase}
+                    {sanitizeText(item.phrase, 500)}
                   </blockquote>
 
                   {/* アクションボタン */}

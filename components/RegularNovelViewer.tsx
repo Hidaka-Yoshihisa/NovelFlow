@@ -24,6 +24,7 @@ import {
 import type { NovelWithDetails, PhraseLike } from '@/types/database';
 import { recordInteraction } from '@/lib/supabase';
 import PhraseLikesModal from './PhraseLikesModal';
+import { sanitizeText, sanitizeMultilineText } from '@/src/utils/sanitize';
 
 interface RegularNovelViewerProps {
   novel: NovelWithDetails;
@@ -251,20 +252,21 @@ export default function RegularNovelViewer({
   const handleLikeCurrentSelection = async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!selectionPopup) return;
-    const phrase = selectionPopup.text;
+    const phrase = sanitizeText(selectionPopup.text, 500);
     setSelectionPopup(null);
     window.getSelection()?.removeAllRanges();
+    if (!phrase) return;
 
     await onAddPhraseLike?.({
       userId: '',
       novelId: novel.id,
-      novelTitle: novel.title,
-      novelCategory: novel.category || '通常小説',
-      authorName: novel.author?.username || '作者',
+      novelTitle: sanitizeText(novel.title, 120),
+      novelCategory: sanitizeText(novel.category || '通常小説', 50),
+      authorName: sanitizeText(novel.author?.username || '作者', 60),
       pageNumber: currentChapterIndex + 1,
-      chapterTitle: currentChapter.chapter_title || `第${currentChapterIndex + 1}話`,
+      chapterTitle: sanitizeText(currentChapter.chapter_title || `第${currentChapterIndex + 1}話`, 100),
       phrase,
-      surroundingContext: currentChapter.content,
+      surroundingContext: sanitizeMultilineText(currentChapter.content, 500),
     });
 
     setActiveToast(`「${phrase.slice(0, 14)}${phrase.length > 14 ? '…' : ''}」にいいねしました！`);
@@ -272,27 +274,28 @@ export default function RegularNovelViewer({
 
   // 文タップモードでの文いいね
   const handleLikeSentence = async (sentence: string) => {
-    if (!sentence) return;
+    const cleanSentence = sanitizeText(sentence, 500);
+    if (!cleanSentence) return;
     setSelectedSentenceForLike(null);
 
     await onAddPhraseLike?.({
       userId: '',
       novelId: novel.id,
-      novelTitle: novel.title,
-      novelCategory: novel.category || '通常小説',
-      authorName: novel.author?.username || '作者',
+      novelTitle: sanitizeText(novel.title, 120),
+      novelCategory: sanitizeText(novel.category || '通常小説', 50),
+      authorName: sanitizeText(novel.author?.username || '作者', 60),
       pageNumber: currentChapterIndex + 1,
-      chapterTitle: currentChapter.chapter_title || `第${currentChapterIndex + 1}話`,
-      phrase: sentence,
-      surroundingContext: currentChapter.content,
+      chapterTitle: sanitizeText(currentChapter.chapter_title || `第${currentChapterIndex + 1}話`, 100),
+      phrase: cleanSentence,
+      surroundingContext: sanitizeMultilineText(currentChapter.content, 500),
     });
 
-    setActiveToast(`「${sentence.slice(0, 14)}${sentence.length > 14 ? '…' : ''}」にいいねしました！`);
+    setActiveToast(`「${cleanSentence.slice(0, 14)}${cleanSentence.length > 14 ? '…' : ''}」にいいねしました！`);
   };
 
-  // 本文中のフレーズハイライト＋文選択の描画ロジック
+  // 本文中のフレーズハイライト＋文選択の描画ロジック（DOMPurifyサニタイズ適用）
   const renderHighlightedContent = () => {
-    const rawContent = currentChapter.content || '';
+    const rawContent = sanitizeMultilineText(currentChapter.content || '');
     const chapterPhrases = currentNovelPhraseLikes.filter(
       (item) => item.pageNumber === currentChapterIndex + 1
     );

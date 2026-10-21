@@ -7,6 +7,8 @@ import { X, Plus, Trash2, BookOpen, Sparkles, Send, Check } from 'lucide-react';
 import { publishNovel } from '@/lib/supabase';
 import { useAuth } from '@/lib/authContext';
 import type { NovelWithDetails } from '@/types/database';
+import { CreateNovelSchema } from '@/src/utils/validation';
+import { sanitizeText, sanitizeMultilineText } from '@/src/utils/sanitize';
 
 interface PublishModalProps {
   isOpen: boolean;
@@ -22,6 +24,7 @@ export default function PublishModal({ isOpen, onClose, onSuccess }: PublishModa
   const [synopsis, setSynopsis] = useState('');
   const [category, setCategory] = useState('ファンタジー');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   useEffect(() => {
     if (currentUser?.username && !authorName) {
@@ -60,32 +63,39 @@ export default function PublishModal({ isOpen, onClose, onSuccess }: PublishModa
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!title.trim() || pages.every((p) => !p.content.trim())) {
-      alert('タイトルと本文を入力してください');
+    setErrorMessage(null);
+
+    const sanitizedPages = pages
+      .map((p, idx) => ({
+        page_number: idx + 1,
+        chapter_title: sanitizeText(p.chapter_title, 100),
+        content: sanitizeMultilineText(p.content, 20000),
+      }))
+      .filter((p) => p.content.length > 0);
+
+    const payload = {
+      title: sanitizeText(title, 120),
+      authorName: sanitizeText(authorName, 60) || 'あなた',
+      synopsis: sanitizeMultilineText(synopsis, 1000),
+      type: novelType,
+      category: sanitizeText(category, 50),
+      pages: sanitizedPages,
+    };
+
+    const validation = CreateNovelSchema.safeParse(payload);
+    if (!validation.success) {
+      setErrorMessage(validation.error.issues[0]?.message || 'タイトルと本文を入力してください');
       return;
     }
 
     setIsSubmitting(true);
     try {
-      const created = await publishNovel({
-        title: title.trim(),
-        authorName: authorName.trim() || 'あなた',
-        synopsis: synopsis.trim(),
-        type: novelType,
-        category,
-        pages: pages
-          .filter((p) => p.content.trim())
-          .map((p, idx) => ({
-            page_number: idx + 1,
-            chapter_title: p.chapter_title,
-            content: p.content.trim(),
-          })),
-      });
-
+      const created = await publishNovel(payload);
       onSuccess(created);
       onClose();
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to publish novel:', err);
+      setErrorMessage(err?.message || '投稿中にエラーが発生しました');
     } finally {
       setIsSubmitting(false);
     }
@@ -120,6 +130,12 @@ export default function PublishModal({ isOpen, onClose, onSuccess }: PublishModa
 
         {/* フォーム */}
         <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto py-5 space-y-5 pr-1">
+          {errorMessage && (
+            <div className="p-3 rounded-xl bg-rose-500/15 border border-rose-500/30 text-xs text-rose-300 font-medium">
+              {errorMessage}
+            </div>
+          )}
+
           {/* 小説種別トグル */}
           <div>
             <label className="block text-xs font-semibold text-neutral-300 mb-2">作品タイプ</label>

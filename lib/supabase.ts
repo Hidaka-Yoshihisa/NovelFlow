@@ -1,6 +1,12 @@
 // lib/supabase.ts
 import { createClient } from '@supabase/supabase-js';
 import type { Database, Profile, Novel, NovelPage, NovelWithDetails, PhraseLike } from '@/types/database';
+import {
+  sanitizeText,
+  sanitizeMultilineText,
+  sanitizeNovelData,
+  sanitizePhraseLikeData,
+} from '../src/utils/sanitize';
 
 const getEnvVar = (nextKey: string, viteKey: string): string => {
   if (typeof process !== 'undefined' && process.env && process.env[nextKey]) {
@@ -1072,7 +1078,22 @@ export async function createPhraseLike(
   params: Omit<PhraseLike, 'id' | 'createdAt'>
 ): Promise<PhraseLike> {
   const effectiveId = getEffectiveUserId(params.userId ? { id: params.userId } : undefined);
-  const payload = { ...params, userId: effectiveId };
+  const sanitizedParams = sanitizePhraseLikeData({
+    ...params,
+    id: 'temp',
+    userId: effectiveId,
+    createdAt: '',
+  });
+  const payload = {
+    ...params,
+    userId: effectiveId,
+    novelTitle: sanitizedParams.novelTitle,
+    novelCategory: sanitizedParams.novelCategory,
+    authorName: sanitizedParams.authorName,
+    chapterTitle: sanitizedParams.chapterTitle,
+    phrase: sanitizedParams.phrase,
+    surroundingContext: sanitizedParams.surroundingContext,
+  };
 
   // ローカル先行追加
   const localLikes = getLocalUserPhraseLikes(effectiveId);
@@ -1297,23 +1318,42 @@ export async function publishNovel(params: {
   category: string;
   pages: Array<{ page_number: number; chapter_title?: string; content: string }>;
 }): Promise<NovelWithDetails> {
+  const sanitizedPayload = {
+    title: sanitizeText(params.title, 120),
+    synopsis: sanitizeMultilineText(params.synopsis, 1000),
+    authorName: sanitizeText(params.authorName, 60) || '名無し作家',
+    type: params.type,
+    category: sanitizeText(params.category, 50) || 'ファンタジー',
+    pages: params.pages.map((p, idx) => ({
+      page_number: p.page_number || idx + 1,
+      chapter_title: p.chapter_title ? sanitizeText(p.chapter_title, 100) : undefined,
+      content: sanitizeMultilineText(p.content, 20000),
+    })),
+  };
+
   // 1. サーバーAPIへPOST（全端末・再読み込み後も保持されるように）
   try {
     const res = await fetch('/api/novels', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(params),
+      body: JSON.stringify(sanitizedPayload),
     });
     if (res.ok) {
       const data = await res.json();
       if (data && data.novel) {
-        // ローカルストレージにもバックアップ
+        const cleanNovel = sanitizeNovelData(data.novel);
         const currentList = getLocalStoredNovels();
-        saveLocalStoredNovels([data.novel, ...currentList.filter((n) => n.id !== data.novel.id)]);
-        return data.novel;
+        saveLocalStoredNovels([cleanNovel, ...currentList.filter((n) => n.id !== cleanNovel.id)]);
+        return cleanNovel;
       }
+    } else if (res.status === 400 || res.status === 429) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(errData.error || '入力内容の確認またはしばらく待ってから再度お試しください。');
     }
-  } catch (err) {
+  } catch (err: any) {
+    if (err instanceof Error && (err.message.includes('入力') || err.message.includes('上限') || err.message.includes('制限') || err.message.includes('タイトル'))) {
+      throw err;
+    }
     console.warn('Server publish error, saving locally:', err);
   }
 
@@ -1321,31 +1361,31 @@ export async function publishNovel(params: {
   const newNovelId = `user-${Date.now()}`;
   const authorId = `author-${Date.now()}`;
 
-  const newNovel: NovelWithDetails = {
+  const newNovel: NovelWithDetails = sanitizeNovelData({
     id: newNovelId,
     author_id: authorId,
-    title: params.title,
-    synopsis: params.synopsis,
+    title: sanitizedPayload.title,
+    synopsis: sanitizedPayload.synopsis,
     status: 'published',
-    type: params.type,
-    category: params.category,
+    type: sanitizedPayload.type,
+    category: sanitizedPayload.category,
     created_at: new Date().toISOString(),
     author: {
       id: authorId,
-      username: params.authorName || '名無し作家',
+      username: sanitizedPayload.authorName,
       avatar_url: `https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=150&auto=format&fit=crop&q=80`,
     },
     likesCount: 0,
     commentsCount: 0,
     tipsTotal: 0,
-    pages: params.pages.map((p, idx) => ({
+    pages: sanitizedPayload.pages.map((p, idx) => ({
       id: `p-${newNovelId}-${idx + 1}`,
       novel_id: newNovelId,
       page_number: p.page_number || idx + 1,
       chapter_title: p.chapter_title || null,
       content: p.content,
     })),
-  };
+  });
 
   const currentList = getLocalStoredNovels();
   saveLocalStoredNovels([newNovel, ...currentList]);
